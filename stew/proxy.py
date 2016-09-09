@@ -1,3 +1,19 @@
+class Proxied(object):
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return self.obj
+
+    def __set__(self, instance, value):
+        if instance is None:
+            return self
+        self.obj = value
+
+
 class ProxyBase(type):
 
     _special_names = [
@@ -31,13 +47,16 @@ class ProxyBase(type):
             if name not in attrs:
                 attrs[name] = make_method(name)
 
+        attrs['_proxied'] = Proxied(None)
+
         return type.__new__(cls, classname, bases, attrs)
 
 
 class Proxy(metaclass=ProxyBase):
 
     def __init__(self, proxied=None):
-        object.__setattr__(self, '_proxied', proxied)
+        pass
+        # object.__setattr__(self, '_proxied', proxied)
 
     def __getattribute__(self, attr):
         if attr in object.__getattribute__(self, '__dict__'):

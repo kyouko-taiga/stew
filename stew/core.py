@@ -1,4 +1,6 @@
-from functools import update_wrapper
+import random
+
+from functools import update_wrapper, wraps
 from types import FunctionType
 
 from .exc import SortError, StewError
@@ -31,37 +33,65 @@ class Generator(Proxy):
             self.codomain = annotations.pop('return')
         self.domain = annotations
 
-    def __call__(self, **kwargs):
+    def __call__(self, *args, **kwargs):
         # If the generator is of the form () -> type, then we return itself.
         if not self.domain:
+            if len(args) or len(kwargs):
+                raise StewError('%s takes no argument.' % self)
             return self
 
         # Return a new generator storing the given arguments.
-        rv = Generator(self._stew, self._fn, proxied=self._proxied)
+        proxied = object.__getattribute__(self, '_proxied')
+        rv = Generator(self._stew, self._fn, proxied=proxied)
+
+        object.__setattr__(rv, 'domain', self.domain)
+        object.__setattr__(rv, 'codomain', self.codomain)
+
+        # If there's a single argument, then we can map it anonymously.
+        if (len(self.domain) == 1) and (len(args) > 0):
+            # Raise for multiple unamed arguments.
+            if len(args) > 1:
+                raise StewError('Cannot use more than 1 unamed parameter.')
+
+            name = list(self.domain.keys())[0]
+            object.__setattr__(rv, '_args', {name: args[0]})
+            return rv
+
+        # Read named arguments.
         generator_args = {}
 
         for arg in self.domain:
             # Make sure the given arguments match the domain of the generator.
             if arg not in kwargs:
                 raise StewError('Missing generator argument: `%s`.' % arg)
-            if not isinstance(kwargs[arg], self.domain[arg]):
-                raise SortError(
-                    '`%s` should have sort `%s`, not `%s`.' %
-                    (arg, self.domain[arg], kwargs[arg].__class__))
 
             generator_args[arg] = kwargs[arg]
 
-        object.__setattr__(rv, 'domain', self.domain)
-        object.__setattr__(rv, 'codomain', self.codomain)
-        object.__setattr__(rv, '_args', generator_args)
+        # TODO Typechecking of the arguments
 
+        object.__setattr__(rv, '_args', generator_args)
         return rv
 
     def __eq__(self, other):
-        return (
-            isinstance(other, Generator) and
-            (other._proxied == self._proxied) and
-            all(other._args[name] == self._args[name] for name in self._args))
+        if isinstance(other, Variable):
+            return self.codomain == other.domain
+
+        if isinstance(other, Generator):
+            lhs_proxied = object.__getattribute__(self, '_proxied')
+            rhs_proxied = object.__getattribute__(other, '_proxied')
+
+            if lhs_proxied != rhs_proxied:
+                return False
+
+            for name in set(self._args) | set(other._args):
+                if (name not in self._args) or (name not in other._args):
+                    return False
+                if self._args[name] != other._args[name]:
+                    return False
+
+            return True
+
+        return super().__eq__(other)
 
     def __str__(self):
         # If there isn't any argument, we just return the generator's name.
@@ -82,13 +112,28 @@ class Operation(object):
         self.stew = stew
 
         annotations = dict(fn.__annotations__)
-        self.name = fn.__name__
+        self.fn = fn
         self.codomain = annotations.pop('return')
         self.domain = annotations
 
+    def __get__(self, obj, type=None):
+        if obj is None:
+            return self
+
+        new_func = self.fn.__get__(obj, type)
+        return self.__class__(self.stew, new_func)
+
+    def __call__(self, **kwargs):
+        rewritings = self.fn(**kwargs)
+        elligible = [rewriting for rewriting, guard in rewritings.items() if guard]
+
+        if elligible:
+            return random.choice(elligible)
+        return None
+
     def __str__(self):
         domain = ', '.join('%s:%s' % (name, sort.__name__) for name, sort in self.domain.items())
-        return '%s : %s -> %s' % (self.name, domain, self.codomain.__name__)
+        return '%s : %s -> %s' % (self.fn.__name__, domain, self.codomain.__name__)
 
 
 class Attribute(object):
@@ -134,32 +179,27 @@ class Stew(object):
 
 class SortBase(type):
 
-    recursive_reference = object()
+    _recursive_references = {}
 
     @classmethod
     def __prepare__(metacls, name, bases, **kwargs):
         # Inject the class name in the namespace before its body is executed
         # so that functions annotations can use it to denote morphisms.
-        return {name: SortBase.recursive_reference}
+        SortBase._recursive_references[name] = Proxy()
+        return {name: SortBase._recursive_references[name]}
 
     def __new__(cls, classname, bases, attrs):
         # Create the sort class.
         new_sort = type.__new__(cls, classname, bases, attrs)
 
-        for name, attr in attrs.items():
-            # Replace the self references in the sort attributes.
-            if hasattr(attr, 'domain'):
-                for x in attr.domain:
-                    if attr.domain[x] is SortBase.recursive_reference:
-                        attr.domain[x] = new_sort
-            if hasattr(attr, 'codomain'):
-                if attr.codomain is SortBase.recursive_reference:
-                     attr.codomain = new_sort
+        object.__setattr__(SortBase._recursive_references[classname], '_proxied', new_sort)
 
+        obj = new_sort()
+        for name, attr in attrs.items():
             # Set the proxied object of the sort generators.
             if isinstance(attr, Generator):
                 attr.codomain = new_sort
-                attr._proxied = new_sort()
+                object.__setattr__(attr, '_proxied', obj)
 
         return new_sort
 
@@ -171,3 +211,12 @@ class Sort(metaclass=SortBase):
         for name, attr in self.__dict__.items():
             if isinstance(attr, Attribute):
                 setattr(self, name, kwargs.get(name, attr.default))
+
+
+class Variable(object):
+
+    def __init__(self, domain):
+        self.domain = domain
+
+    def __str__(self):
+        return '$%s' % self.domain.__name__
