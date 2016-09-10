@@ -1,180 +1,139 @@
 import random
 
-from functools import update_wrapper, wraps
-from types import FunctionType
+from contextlib import contextmanager
+from functools import update_wrapper
 
-from .exc import SortError, StewError
+from .exceptions import ArgumentError, MatchError, RewritingError
 from .proxy import Proxy
+from .rewriting import MatchResult, RewritingContext, Var, matches
 
 
-class _undefined(object):
-
-    def __str__(self):
-        return 'undefined'
+undefined = object()
 
 
-undefined = _undefined()
+class Stew(object):
 
+    def __init__(self):
+        self.sorts = {}
+        self.generators = {}
+        self.operations = {}
 
-class Generator(Proxy):
+        self._rewriting_context = None
 
-    def __init__(self, stew, fn, proxied=undefined):
-        super().__init__(proxied=proxied)
+    @property
+    @contextmanager
+    def rewriting_context(self):
+        self._rewriting_context = RewritingContext()
+        yield self._rewriting_context
+        self._rewriting_context = None
 
-        object.__setattr__(self, '_stew', stew)
-        object.__setattr__(self, '_args', {})
-        object.__setattr__(self, '_fn', fn)
+    def sort(self, cls):
+        # Make sure we didn't already register the given class name.
+        if cls.__name__ in self.sorts:
+            raise SyntaxError('Duplicate Sort: `%s`.' % cls.__name__)
 
-        object.__setattr__(self, 'domain', undefined)
-        object.__setattr__(self, 'codomain', undefined)
+        # Create a new class that stores a reference to this stew.
+        cls_dict = dict(dict(cls.__dict__))
+        cls_dict['stew'] = self
+        new_cls = type(cls.__name__, cls.__bases__, cls_dict)
 
-        annotations = dict(fn.__annotations__)
-        if 'return' in annotations:
-            self.codomain = annotations.pop('return')
-        self.domain = annotations
+        # Register the new sort under its given class name.
+        self.sorts[new_cls.__name__] = new_cls
+        return new_cls
 
-    def __call__(self, *args, **kwargs):
-        # If the generator is of the form () -> type, then we return itself.
-        if not self.domain:
-            if len(args) or len(kwargs):
-                raise StewError('%s takes no argument.' % self)
-            return self
+    def generator(self, fn):
+        self.generators[fn.__qualname__] = Generator(self, fn)
+        return self.generators[fn.__qualname__]
 
-        # Return a new generator storing the given arguments.
-        proxied = object.__getattribute__(self, '_proxied')
-        rv = Generator(self._stew, self._fn, proxied=proxied)
-
-        object.__setattr__(rv, 'domain', self.domain)
-        object.__setattr__(rv, 'codomain', self.codomain)
-
-        # If there's a single argument, then we can map it anonymously.
-        if (len(self.domain) == 1) and (len(args) > 0):
-            # Raise for multiple unamed arguments.
-            if len(args) > 1:
-                raise StewError('Cannot use more than 1 unamed parameter.')
-
-            name = list(self.domain.keys())[0]
-            object.__setattr__(rv, '_args', {name: args[0]})
-            return rv
-
-        # Read named arguments.
-        generator_args = {}
-
-        for arg in self.domain:
-            # Make sure the given arguments match the domain of the generator.
-            if arg not in kwargs:
-                raise StewError('Missing generator argument: `%s`.' % arg)
-
-            generator_args[arg] = kwargs[arg]
-
-        # TODO Typechecking of the arguments
-
-        object.__setattr__(rv, '_args', generator_args)
-        return rv
-
-    def __eq__(self, other):
-        if isinstance(other, Variable):
-            return self.codomain == other.domain
-
-        if isinstance(other, Generator):
-            lhs_proxied = object.__getattribute__(self, '_proxied')
-            rhs_proxied = object.__getattribute__(other, '_proxied')
-
-            if lhs_proxied != rhs_proxied:
-                return False
-
-            for name in set(self._args) | set(other._args):
-                if (name not in self._args) or (name not in other._args):
-                    return False
-                if self._args[name] != other._args[name]:
-                    return False
-
-            return True
-
-        return super().__eq__(other)
-
-    def __str__(self):
-        # If there isn't any argument, we just return the generator's name.
-        if len(self._args) == 0:
-            return self._fn.__qualname__
-
-        # If there's only one argument, we skip the name.
-        if len(self._args) == 1:
-            value = list(self._args.values())[0]
-            return self._fn.__qualname__ + '(%s)' % value
-
-        return self._fn.__qualname__ + '(' + args + ')'
+    def operation(self, fn):
+        self.operations[fn.__qualname__] = Operation(self, fn)
+        return self.operations[fn.__qualname__]
 
 
 class Operation(object):
 
     def __init__(self, stew, fn):
         self.stew = stew
-
-        annotations = dict(fn.__annotations__)
         self.fn = fn
-        self.codomain = annotations.pop('return')
+
+        # Get the domain and codomain of the generator.
+        annotations = dict(fn.__annotations__)
+        try:
+            self.codomain = annotations.pop('return')
+        except KeyError:
+            raise SyntaxError('Undefined codomain for %s.' % fn.__name__)
         self.domain = annotations
 
-    def __get__(self, obj, type=None):
-        if obj is None:
+    def __get__(self, instance, owner=None):
+        if instance is None:
             return self
 
-        new_func = self.fn.__get__(obj, type)
-        return self.__class__(self.stew, new_func)
+        new_fn = self.fn.__get__(instance, owner)
+        return self.__class__(self.stew, new_fn)
 
-    def __call__(self, **kwargs):
-        rewritings = self.fn(**kwargs)
-        elligible = [rewriting for rewriting, guard in rewritings.items() if guard]
+    def __call__(self, *args, **kwargs):
+        # TODO Type checking
 
-        if elligible:
-            return random.choice(elligible)
-        return None
+        with self.stew.rewriting_context as context:
+            for item in self.fn(*args, **kwargs):
+                if context.writable:
+                    context.rewritings.add(item)
+
+            if len(context.rewritings) > 0:
+                return random.choice(list(context.rewritings))
+            raise RewritingError('Failed apply %s.' % self.fn.__name__)
 
     def __str__(self):
         domain = ', '.join('%s:%s' % (name, sort.__name__) for name, sort in self.domain.items())
-        return '%s : %s -> %s' % (self.fn.__name__, domain, self.codomain.__name__)
+        return '(%s) -> %s' % (domain, self.codomain.__name__)
+
+
+class Generator(Operation):
+
+    def __call__(self, *args, **kwargs):
+        # Initialize all sorts arguments with `undefined`.
+        kwargs = {name: undefined for name in self.codomain.__attributes__}
+        rv = self.codomain(**kwargs)
+        rv._generator = self
+
+        # If the domain of the generator is empty, make sure no argument
+        # were passed to the function.
+        if len(self.domain) == 0:
+            if (len(args) > 0) or (len(kwargs) > 0):
+                raise ArgumentError('%s takes no arguments.' % self.fn.__name__)
+            return rv
+
+        # Allow to call generators with a single positional argument.
+        if (len(self.domain) == 1) and (len(args) == 1):
+            kwargs.update([(list(self.domain.keys())[0], args[0])])
+
+        # Look for the generator arguments.
+        rv._generator_args = {}
+        missing = []
+        for name, sort in self.domain.items():
+            try:
+                value = kwargs[name]
+            except KeyError:
+                missing.append(name)
+
+            if not _assert_sort(value, sort):
+                raise ArgumentError(
+                    "'%s' should be a term or variable of sort '%s'." % (name, sort.__name__))
+
+            rv._generator_args[name] = kwargs[name]
+
+        if len(missing) > 0:
+            raise ArgumentError(
+                '%s() missing argument(s): %s' % (self.fn.__name__, ', '.join(missing)))
+
+        return rv
 
 
 class Attribute(object):
 
-    def __init__(self, stew, sort=undefined, default=undefined):
-        self.stew = stew
-        self.sort = sort
+    def __init__(self, domain, default=None):
+        self.domain = domain
         self.default = default
-
-
-class Stew(object):
-
-    def __init__(self):
-        self._sorts = {}
-        self._generators = {}
-        self._operations = {}
-
-    def sort(self, cls):
-        # Make sure we didn't already register the given class name.
-        if cls.__name__ in self._sorts:
-            raise StewError('Duplicate Sort: `%s`.' % cls.__name__)
-
-        # Make sure the given class inherits from `Sort`.
-        rv = cls
-        if Sort not in cls.__bases__:
-            rv = type(cls.__name__, (Sort,) + cls.__bases__, dict(cls.__dict__))
-
-        # Register the new sort under its given class name.
-        self._sorts[cls.__name__] = rv
-        return rv
-
-    def generator(self, fn):
-        self._generators[fn.__qualname__] = Generator(self, fn)
-        return self._generators[fn.__qualname__]
-
-    def operation(self, fn):
-        self._operations[fn.__qualname__] = Operation(self, fn)
-        return self._operations[fn.__qualname__]
-
-    def attribute(self):
-        pass
 
 
 class SortBase(type):
@@ -184,22 +143,21 @@ class SortBase(type):
     @classmethod
     def __prepare__(metacls, name, bases, **kwargs):
         # Inject the class name in the namespace before its body is executed
-        # so that functions annotations can use it to denote morphisms.
+        # so that annotations can use it to denote morphisms and generators.
         SortBase._recursive_references[name] = Proxy()
         return {name: SortBase._recursive_references[name]}
 
     def __new__(cls, classname, bases, attrs):
-        # Create the sort class.
-        new_sort = type.__new__(cls, classname, bases, attrs)
-
-        object.__setattr__(SortBase._recursive_references[classname], '_proxied', new_sort)
-
-        obj = new_sort()
+        # Register class attributes.
+        sort_attributes = []
         for name, attr in attrs.items():
-            # Set the proxied object of the sort generators.
-            if isinstance(attr, Generator):
-                attr.codomain = new_sort
-                object.__setattr__(attr, '_proxied', obj)
+            if isinstance(attr, Attribute):
+                sort_attributes.append(name)
+        attrs['__attributes__'] = tuple(sort_attributes)
+
+        # Create the sort class and bind recursive references.
+        new_sort = type.__new__(cls, classname, bases, attrs)
+        object.__setattr__(SortBase._recursive_references[classname], '__proxied__', new_sort)
 
         return new_sort
 
@@ -207,16 +165,94 @@ class SortBase(type):
 class Sort(metaclass=SortBase):
 
     def __init__(self, **kwargs):
-        # Initialize sort attributes.
-        for name, attr in self.__dict__.items():
-            if isinstance(attr, Attribute):
-                setattr(self, name, kwargs.get(name, attr.default))
+        self._generator = None
+        self._generator_args = None
 
+        # Initialize the instance attribute.
+        missing = []
+        for name in self.__attributes__:
+            attribute = getattr(self.__class__, name)
+            value = kwargs.get(name, attribute.default)
+            if value is None:
+                missing.append(name)
+                continue
 
-class Variable(object):
+            if not _assert_sort(value, attribute.domain):
+                raise ArgumentError(
+                    "'%s' should be a term or variable of sort '%s'." %
+                    (name, attribute.domain.__name__))
 
-    def __init__(self, domain):
-        self.domain = domain
+            setattr(self, name, value)
+
+        if len(missing) > 0:
+            raise ArgumentError(
+                '%s() missing argument(s): %s' % (self.__class__.__name__, ', '.join(missing)))
+
+    @property
+    def _is_a_constant(self):
+        return self._generator is not None
+
+    @contextmanager
+    def matches(self, pattern):
+        if not hasattr(self, 'stew'):
+            raise RuntimeError(
+                'Undefined stew. Did you forget to decorate %s in module %s?' %
+                (self.__class__.__name__, self.__class__.__module__))
+
+        if self.stew._rewriting_context is None:
+            raise RuntimeError('Working outside of a rewriting context.')
+
+        match_result = {}
+        self.stew._rewriting_context.writable = matches(self, pattern, match_result)
+        try:
+            yield MatchResult(**match_result)
+        except MatchError:
+            pass
+
+    def where(self, **kwargs):
+        return self.__class__(
+            **{name: kwargs.get(name, getattr(self, name)) for name in self.__attributes__})
+
+    def __hash__(self):
+        if self._is_a_constant:
+            if self._generator_args is None:
+                return hash(self._generator)
+            return hash(
+                (self._generator, ) +
+                tuple((name, term) for name, term in self._generator_args.items()))
+
+        return hash(tuple((name, getattr(self, name)) for name in self.__attributes__))
+
+    def __eq__(self, other):
+        if self._is_a_constant:
+            if (self._generator != other._generator):
+                return False
+            if self._generator_args is None:
+                return True
+            keys = self._generator_args.keys()
+            return all(self._generator_args[n] == other._generator_args[n] for n in keys)
+
+        return all(getattr(self, name) == getattr(other, name) for name in self.__attributes__)
 
     def __str__(self):
-        return '$%s' % self.domain.__name__
+        if self._is_a_constant:
+            if self._generator_args is None:
+                return self._generator.fn.__name__
+            else:
+                args = ['%s: %s' % (name, term) for name, term in self._generator_args.items()]
+                args = ', '.join(args)
+                return self._generator.fn.__name__ + '(' + args + ')'
+        else:
+            if len(self.__attributes__) == 0:
+                return self.__class__.__name__
+            else:
+                args = ['%s = %s' % (name, getattr(self, name)) for name in self.__attributes__]
+                args = ', '.join(args)
+                return self.__class__.__name__ + '(' + args + ')'
+
+    def __repr__(self):
+        return repr(str(self))
+
+
+def _assert_sort(term, sort):
+    return isinstance(term, Var) and issubclass(term.domain, sort) or isinstance(term, sort)

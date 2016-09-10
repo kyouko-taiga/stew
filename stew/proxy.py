@@ -33,43 +33,45 @@ class ProxyBase(type):
         '__rlshift__', '__rmod__', '__rmul__', '__ror__', '__rpow__',
         '__rrshift__', '__rshift__', '__rsub__', '__rtruediv__', '__rxor__',
         '__setitem__', '__setslice__', '__sub__', '__str__', '__truediv__',
-        '__xor__'
+        '__xor__', '__instancecheck__', '__subclasscheck__'
     ]
 
     def __new__(cls, classname, bases, attrs):
         def make_method(name):
             def method(self, *args, **kwargs):
-                mtd = getattr(object.__getattribute__(self, '_proxied'), name)
-                return mtd(*args, **kwargs)
+                # Invoking special methods on the type object itself will fail
+                # with a TypeError complaining about the descriptor missing an
+                # argument. This can be avoided by bypassing the instance when
+                # looking up special methods.
+                proxied = object.__getattribute__(self, '__proxied__')
+                return getattr(type(proxied), name)(proxied, *args, **kwargs)
             return method
 
         for name in cls._special_names:
             if name not in attrs:
                 attrs[name] = make_method(name)
 
-        attrs['_proxied'] = Proxied(None)
-
         return type.__new__(cls, classname, bases, attrs)
 
 
 class Proxy(metaclass=ProxyBase):
 
-    def __init__(self, proxied=None):
-        pass
-        # object.__setattr__(self, '_proxied', proxied)
+    __slots__ = ('__proxied__', '__lazy__')
+
+    def __init__(self, proxied=None, lazy=False):
+        object.__setattr__(self, '__proxied__', proxied)
+        object.__setattr__(self, '__lazy__', lazy)
+
+    def _get_proxied_object(self):
+        rv = object.__getattribute__(self, '__proxied__')
+        if object.__getattribute__(self, '__lazy__'):
+            return rv()
+        return rv
 
     def __getattribute__(self, attr):
-        if attr in object.__getattribute__(self, '__dict__'):
-            # Since the requested attribute has been defined in the proxy,
-            # we don't forward __getattribute__ to the proxied object.
-            return object.__getattribute__(self, attr)
-        else:
-            return getattr(object.__getattribute__(self, '_proxied'), attr)
+        proxied = object.__getattribute__(self, '_get_proxied_object')()
+        return getattr(proxied, attr)
 
     def __setattr__(self, attr, value):
-        if attr in object.__getattribute__(self, '__dict__'):
-            # Since the requested attribute has been defined in the proxy,
-            # we don't forward __setattr__ to the proxied object.
-            object.__setattr__(self, attr, value)
-        else:
-            setattr(object.__getattribute__(self, '_proxied'), attr, value)
+        proxied = object.__getattribute__(self, '_get_proxied_object')()
+        setattr(proxied, attr, value)
