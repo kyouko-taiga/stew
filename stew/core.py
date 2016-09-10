@@ -92,15 +92,15 @@ class Generator(Operation):
 
     def __call__(self, *args, **kwargs):
         # Initialize all sorts arguments with `undefined`.
-        kwargs = {name: undefined for name in self.codomain.__attributes__}
-        rv = self.codomain(**kwargs)
+        sort_kwargs = {name: undefined for name in self.codomain.__attributes__}
+        rv = self.codomain(**sort_kwargs)
         rv._generator = self
 
         # If the domain of the generator is empty, make sure no argument
         # were passed to the function.
         if len(self.domain) == 0:
             if (len(args) > 0) or (len(kwargs) > 0):
-                raise ArgumentError('%s takes no arguments.' % self.fn.__name__)
+                raise ArgumentError('%s() takes no arguments.' % self.fn.__name__)
             return rv
 
         # Allow to call generators with a single positional argument.
@@ -115,6 +115,7 @@ class Generator(Operation):
                 value = kwargs[name]
             except KeyError:
                 missing.append(name)
+                continue
 
             if not _assert_sort(value, sort):
                 raise ArgumentError(
