@@ -1,6 +1,6 @@
 import unittest
 
-from stew.core import Stew, Sort
+from stew.core import Stew, Sort, Attribute
 from stew.exceptions import MatchError, RewritingError
 from stew.rewriting import Var, and_, or_
 
@@ -19,6 +19,17 @@ class TestRewriting(unittest.TestCase):
             @self.stew.generator
             def suc(self: S) -> S: pass
 
+        @self.stew.sort
+        class T(Sort):
+
+            @self.stew.generator
+            def cons(lhs: S, rhs: S) -> T: pass
+
+        @self.stew.sort
+        class U(Sort):
+
+            foo = Attribute(domain=S, default=S.nil())
+
     def test_pattern_matching(self):
         S = self.stew.sorts['S']
 
@@ -32,6 +43,7 @@ class TestRewriting(unittest.TestCase):
                 self.assertFalse(context.writable)
 
     def test_pattern_matching_with_variables(self):
+        # Test pattern matching on generators with single arguments.
         S = self.stew.sorts['S']
         x = Var(name='x', domain=S)
 
@@ -42,8 +54,41 @@ class TestRewriting(unittest.TestCase):
                 self.assertIs(match.x, term)
 
             subterm = S.nil()
-            term = S.suc(subterm)
-            with term.matches(S.suc(x)) as match:
+            with S.suc(subterm).matches(S.suc(x)) as match:
+                self.assertTrue(context.writable)
+                self.assertIs(match.x, subterm)
+
+        # Test pattern matching on generators with multiple arguments.
+        T = self.stew.sorts['T']
+        x = Var(name='x', domain=S)
+        y = Var(name='y', domain=S)
+
+        with self.stew.rewriting_context as context:
+            lhs_subterm = S.nil()
+            rhs_subterm = S.suc(S.nil())
+            with T.cons(lhs=lhs_subterm, rhs=rhs_subterm).matches(T.cons(lhs=x, rhs=y)) as match:
+                self.assertTrue(context.writable)
+                self.assertIs(match.x, lhs_subterm)
+                self.assertIs(match.y, rhs_subterm)
+
+            lhs_subterm = S.nil()
+            rhs_subterm = S.nil()
+            with T.cons(lhs=lhs_subterm, rhs=rhs_subterm).matches(T.cons(lhs=x, rhs=x)) as match:
+                self.assertTrue(context.writable)
+                self.assertEqual(match.x, lhs_subterm)
+
+            lhs_subterm = S.nil()
+            rhs_subterm = S.suc(S.nil())
+            with T.cons(lhs=lhs_subterm, rhs=rhs_subterm).matches(T.cons(lhs=x, rhs=x)) as match:
+                self.assertFalse(context.writable)
+
+        # Test pattern matching on sorts with attributes.
+        U = self.stew.sorts['U']
+        x = Var(name='x', domain=S)
+
+        with self.stew.rewriting_context as context:
+            subterm = S.suc(S.nil())
+            with U(foo=subterm).matches(U(foo=x)) as match:
                 self.assertTrue(context.writable)
                 self.assertIs(match.x, subterm)
 
