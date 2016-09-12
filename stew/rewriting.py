@@ -60,7 +60,7 @@ class RewritingContext(object):
 
     def __init__(self):
         self.writable = True
-        self.rewritings = set()
+
 
 class Var(object):
 

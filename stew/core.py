@@ -1,5 +1,3 @@
-import random
-
 from contextlib import contextmanager
 from functools import update_wrapper
 
@@ -77,10 +75,8 @@ class Operation(object):
         with self.stew.rewriting_context as context:
             for item in self.fn(*args, **kwargs):
                 if context.writable:
-                    context.rewritings.add(item)
+                    return item
 
-            if len(context.rewritings) > 0:
-                return random.choice(list(context.rewritings))
             raise RewritingError('Failed apply %s.' % self.fn.__name__)
 
     def __str__(self):
