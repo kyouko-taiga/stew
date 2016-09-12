@@ -38,6 +38,14 @@ class Stew(object):
         except MatchError:
             pass
 
+    @contextmanager
+    def if_(self, condition):
+        if self._rewriting_context is None:
+            raise RuntimeError('Working outside of a rewriting context.')
+
+        self._rewriting_context.writable = condition() if callable(condition) else condition
+        yield
+
     def sort(self, cls):
         # Make sure we didn't already register the given class name.
         if cls.__name__ in self.sorts:

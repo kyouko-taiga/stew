@@ -43,6 +43,21 @@ def matches(term, pattern, match_result):
     return False
 
 
+class and_(object):
+
+    def __init__(self, *conditions):
+        self.conditions = conditions
+
+    def __call__(self):
+        return all(c() if callable(c) else c for c in self.conditions)
+
+
+class or_(and_):
+
+    def __call__(self):
+        return any(c() if callable(c) else c for c in self.conditions)
+
+
 class MatchResult(object):
 
     def __init__(self, **attrs):
