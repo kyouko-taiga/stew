@@ -37,6 +37,7 @@ class Stew(object):
             yield MatchResult(**match_result)
         except MatchError:
             pass
+        self._rewriting_context.writable = True
 
     @contextmanager
     def if_(self, condition):
@@ -45,6 +46,7 @@ class Stew(object):
 
         self._rewriting_context.writable = condition() if callable(condition) else condition
         yield
+        self._rewriting_context.writable = True
 
     def sort(self, cls):
         # Make sure we didn't already register the given class name.
