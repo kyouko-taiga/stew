@@ -25,6 +25,19 @@ class Stew(object):
         yield self._rewriting_context
         self._rewriting_context = None
 
+    @contextmanager
+    def matches(self, *args):
+        if self._rewriting_context is None:
+            raise RuntimeError('Working outside of a rewriting context.')
+
+        match_result = {}
+        for term, pattern in args:
+            self._rewriting_context.writable = matches(term, pattern, match_result)
+        try:
+            yield MatchResult(**match_result)
+        except MatchError:
+            pass
+
     def sort(self, cls):
         # Make sure we didn't already register the given class name.
         if cls.__name__ in self.sorts:
@@ -189,22 +202,13 @@ class Sort(metaclass=SortBase):
     def _is_a_constant(self):
         return self._generator is not None
 
-    @contextmanager
     def matches(self, pattern):
         if not hasattr(self, 'stew'):
             raise RuntimeError(
                 'Undefined stew. Did you forget to decorate %s in module %s?' %
                 (self.__class__.__name__, self.__class__.__module__))
 
-        if self.stew._rewriting_context is None:
-            raise RuntimeError('Working outside of a rewriting context.')
-
-        match_result = {}
-        self.stew._rewriting_context.writable = matches(self, pattern, match_result)
-        try:
-            yield MatchResult(**match_result)
-        except MatchError:
-            pass
+        return self.stew.matches((self, pattern))
 
     def where(self, **kwargs):
         return self.__class__(
