@@ -93,7 +93,7 @@ class operation(object):
         try:
             self.codomain = annotations.pop('return')
         except KeyError:
-            raise SyntaxError('Undefined codomain for %s.' % fn.__name__)
+            raise SyntaxError('Undefined codomain for %s().' % fn.__qualname__)
         self.domain = annotations
 
     def __get__(self, instance, owner=None):
@@ -116,7 +116,7 @@ class operation(object):
                 if context.writable:
                     return item
 
-            raise RewritingError('Failed apply %s.' % self.fn.__name__)
+            raise RewritingError('Failed to apply %s().' % self.fn.__qualname__)
 
     def __str__(self):
         domain = ', '.join('%s:%s' % (name, sort.__name__) for name, sort in self.domain.items())
@@ -135,7 +135,7 @@ class generator(operation):
         # were passed to the function.
         if len(self.domain) == 0:
             if (len(args) > 0) or (len(kwargs) > 0):
-                raise ArgumentError('%s() takes no arguments.' % self.fn.__name__)
+                raise ArgumentError('%s() takes no arguments.' % self.fn.__qualname__)
             return rv
 
         # Allow to call generators with a single positional argument.
@@ -160,7 +160,7 @@ class generator(operation):
 
         if len(missing) > 0:
             raise ArgumentError(
-                '%s() missing argument(s): %s' % (self.fn.__name__, ', '.join(missing)))
+                '%s() missing argument(s): %s' % (self.fn.__qualname__, ', '.join(missing)))
 
         return rv
 
@@ -222,7 +222,7 @@ class Sort(metaclass=SortBase):
 
         if len(missing) > 0:
             raise ArgumentError(
-                '%s() missing argument(s): %s' % (self.__class__.__name__, ', '.join(missing)))
+                '%s() missing argument(s): %s' % (self.__class__.__qualname__, ', '.join(missing)))
 
     @property
     def _is_a_constant(self):
@@ -231,8 +231,7 @@ class Sort(metaclass=SortBase):
     def matches(self, pattern):
         if not hasattr(self, 'stew'):
             raise RuntimeError(
-                'Undefined stew. Did you forget to decorate %s in module %s?' %
-                (self.__class__.__name__, self.__class__.__module__))
+                'Undefined stew. Did you forget to decorate?' % self.__class__.__qualname__)
 
         return self.stew.matches((self, pattern))
 
@@ -264,18 +263,18 @@ class Sort(metaclass=SortBase):
     def __str__(self):
         if self._is_a_constant:
             if self._generator_args is None:
-                return self._generator.fn.__name__
+                return self._generator.fn.__qualname__
             else:
                 args = ['%s: %s' % (name, term) for name, term in self._generator_args.items()]
                 args = ', '.join(args)
-                return self._generator.fn.__name__ + '(' + args + ')'
+                return self._generator.fn.__qualname__ + '(' + args + ')'
         else:
             if len(self.__attributes__) == 0:
-                return self.__class__.__name__
+                return self.__class__.__qualname__
             else:
                 args = ['%s = %s' % (name, getattr(self, name)) for name in self.__attributes__]
                 args = ', '.join(args)
-                return self.__class__.__name__ + '(' + args + ')'
+                return self.__class__.__qualname__ + '(' + args + ')'
 
     def __repr__(self):
         return repr(str(self))
