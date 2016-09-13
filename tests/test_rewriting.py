@@ -42,6 +42,21 @@ class TestRewriting(unittest.TestCase):
             with S.suc(S.nil()).matches(S.nil()):
                 self.assertFalse(context.writable)
 
+    def test_pattern_matching_on_multiple_terms(self):
+        S = self.stew.sorts['S']
+
+        term_0 = S.nil()
+        term_1 = S.suc(S.nil())
+
+        with self.stew.rewriting_context as context:
+            with self.stew.matches((term_0, term_0), (term_1, term_1)):
+                self.assertTrue(context.writable)
+
+            with self.stew.matches((term_0, term_1), (term_1, term_1)):
+                self.assertFalse(context.writable)
+            with self.stew.matches((term_0, term_0), (term_1, term_0)):
+                self.assertFalse(context.writable)
+
     def test_pattern_matching_with_variables(self):
         # Test pattern matching on generators with single arguments.
         S = self.stew.sorts['S']

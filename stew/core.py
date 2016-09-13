@@ -32,7 +32,7 @@ class Stew(object):
 
         match_result = {}
         for term, pattern in args:
-            self._rewriting_context.writable = matches(term, pattern, match_result)
+            self._rewriting_context.writable &= matches(term, pattern, match_result)
         try:
             yield MatchResult(**match_result)
         except MatchError:
