@@ -1,7 +1,6 @@
 import unittest
 
 from stew.core import Stew, Sort
-from stew.rewriting import Var
 
 
 class TestSort(unittest.TestCase):

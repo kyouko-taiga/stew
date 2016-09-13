@@ -45,7 +45,7 @@ class TestRewriting(unittest.TestCase):
     def test_pattern_matching_with_variables(self):
         # Test pattern matching on generators with single arguments.
         S = self.stew.sorts['S']
-        x = Var(name='x', domain=S)
+        x = Var('x')
 
         with self.stew.rewriting_context as context:
             term = S.suc(S.nil())
@@ -60,8 +60,8 @@ class TestRewriting(unittest.TestCase):
 
         # Test pattern matching on generators with multiple arguments.
         T = self.stew.sorts['T']
-        x = Var(name='x', domain=S)
-        y = Var(name='y', domain=S)
+        x = Var('x')
+        y = Var('y')
 
         with self.stew.rewriting_context as context:
             lhs_subterm = S.nil()
@@ -84,7 +84,7 @@ class TestRewriting(unittest.TestCase):
 
         # Test pattern matching on sorts with attributes.
         U = self.stew.sorts['U']
-        x = Var(name='x', domain=S)
+        x = Var('x')
 
         with self.stew.rewriting_context as context:
             subterm = S.suc(S.nil())
@@ -155,7 +155,7 @@ class TestRewriting(unittest.TestCase):
 
         @self.stew.operation
         def f(x: S) -> S:
-            v = Var(name='v', domain=S)
+            v = Var('v')
 
             with x.matches(S.suc(v)):
                 yield v

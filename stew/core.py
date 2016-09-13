@@ -152,9 +152,9 @@ class generator(operation):
                 missing.append(name)
                 continue
 
-            if not _assert_sort(value, sort):
+            if not (isinstance(value, Var) or isinstance(value, sort)):
                 raise ArgumentError(
-                    "'%s' should be a term or variable of sort '%s'." % (name, sort.__name__))
+                    "'%s' should be a variable or a term of sort '%s'." % (name, sort.__name__))
 
             rv._generator_args[name] = kwargs[name]
 
@@ -213,9 +213,9 @@ class Sort(metaclass=SortBase):
                 missing.append(name)
                 continue
 
-            if not _assert_sort(value, attribute.domain):
+            if not (isinstance(value, Var) or isinstance(value, attribute.domain)):
                 raise ArgumentError(
-                    "'%s' should be a term or variable of sort '%s'." %
+                    "'%s' should be a variable or a term or of sort '%s'." %
                     (name, attribute.domain.__name__))
 
             setattr(self, name, value)
@@ -279,7 +279,3 @@ class Sort(metaclass=SortBase):
 
     def __repr__(self):
         return repr(str(self))
-
-
-def _assert_sort(term, sort):
-    return isinstance(term, Var) and issubclass(term.domain, sort) or isinstance(term, sort)

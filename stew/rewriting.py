@@ -3,16 +3,14 @@ from .exceptions import MatchError
 
 def matches(term, pattern, match_result):
     if isinstance(pattern, Var):
-        if issubclass(term.__class__, pattern.domain):
-            # If the variable is not bound to any value, we can bind it to the
-            # current term and we have a match. Otherwise, we should also make
-            # sure the bound term is equal to the current one.
-            if pattern.name not in match_result:
-                match_result[pattern.name] = term
-                return True
-            else:
-                return term == match_result[pattern.name]
-        return False
+        # If the variable is not bound to any value, we can bind it to the
+        # current term and we have a match. Otherwise, we should also make
+        # sure the bound term is equal to the current one.
+        if pattern.name not in match_result:
+            match_result[pattern.name] = term
+            return True
+        else:
+            return term == match_result[pattern.name]
 
     if term._is_a_constant or pattern._is_a_constant:
         if not term._is_a_constant or not pattern._is_a_constant:
@@ -79,9 +77,10 @@ class RewritingContext(object):
 
 class Var(object):
 
-    def __init__(self, name, domain):
+    def __init__(self, name):
         self.name = name
-        self.domain = domain
 
     def __eq__(self, other):
-        return isinstance(other, self.domain) or (self is other)
+        if isinstance(other, Var):
+            return self.name == other.name
+        return True
