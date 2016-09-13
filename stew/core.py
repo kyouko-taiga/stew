@@ -53,9 +53,20 @@ class Stew(object):
         if cls.__name__ in self.sorts:
             raise SyntaxError('Duplicate Sort: `%s`.' % cls.__name__)
 
-        # Create a new class that stores a reference to this stew.
+        # Create a new that references this stew.
         cls_dict = dict(dict(cls.__dict__))
         cls_dict['stew'] = self
+
+        for attr in cls_dict.values():
+            if isinstance(attr, operation):
+                attr.stew = self
+
+                # Register all generators and references.
+                if isinstance(attr, generator):
+                    self.generators[attr.fn.__qualname__] = attr
+                else:
+                    self.operations[attr.fn.__qualname__] = attr
+
         new_cls = type(cls.__name__, cls.__bases__, cls_dict)
 
         # Register the new sort under its given class name.
@@ -63,19 +74,19 @@ class Stew(object):
         return new_cls
 
     def generator(self, fn):
-        self.generators[fn.__qualname__] = Generator(self, fn)
+        self.generators[fn.__qualname__] = generator(fn, self)
         return self.generators[fn.__qualname__]
 
     def operation(self, fn):
-        self.operations[fn.__qualname__] = Operation(self, fn)
+        self.operations[fn.__qualname__] = operation(fn, self)
         return self.operations[fn.__qualname__]
 
 
-class Operation(object):
+class operation(object):
 
-    def __init__(self, stew, fn):
-        self.stew = stew
+    def __init__(self, fn, stew=None):
         self.fn = fn
+        self.stew = stew
 
         # Get the domain and codomain of the generator.
         annotations = dict(fn.__annotations__)
@@ -90,10 +101,15 @@ class Operation(object):
             return self
 
         new_fn = self.fn.__get__(instance, owner)
-        return self.__class__(self.stew, new_fn)
+        return self.__class__(new_fn, self.stew)
 
     def __call__(self, *args, **kwargs):
         # TODO Type checking
+
+        if self.stew is None:
+            raise RuntimeError(
+                'Undefined stew. Did you forget to decorate %s()?' %
+                self.fn.__qualname__)
 
         with self.stew.rewriting_context as context:
             for item in self.fn(*args, **kwargs):
@@ -107,7 +123,7 @@ class Operation(object):
         return '(%s) -> %s' % (domain, self.codomain.__name__)
 
 
-class Generator(Operation):
+class generator(operation):
 
     def __call__(self, *args, **kwargs):
         # Initialize all sorts arguments with `undefined`.
