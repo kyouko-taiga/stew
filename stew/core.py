@@ -4,6 +4,7 @@ from functools import update_wrapper
 from .exceptions import ArgumentError, MatchError, RewritingError
 from .proxy import Proxy
 from .rewriting import MatchResult, RewritingContext, Var, matches
+from .types.abstract import AbstractSort
 
 
 undefined = object()
@@ -49,28 +50,40 @@ class Stew(object):
         self._rewriting_context.writable = True
 
     def sort(self, cls):
-        # Make sure we didn't already register the given class name.
-        if cls.__name__ in self.sorts:
-            raise SyntaxError('Duplicate Sort: `%s`.' % cls.__name__)
+        # Check if we already registered a different class under the name of
+        # the class being decorated.
+        if cls.__sortname__ in self.sorts:
+            registered = self.sorts[cls.__sortname__]
+            if (registered is cls) or (registered.__wrapped__ is cls):
+                return registered
+            raise SyntaxError('Duplicate Sort: %s.' % cls.__sortname__)
 
         # Create a new that references this stew.
-        cls_dict = dict(dict(cls.__dict__))
+        cls_dict = dict(cls.__dict__)
         cls_dict['stew'] = self
 
-        for attr in cls_dict.values():
+        # Keep a reference to the decorated class.
+        cls_dict['__wrapped__'] = cls
+
+        for name, attr in cls_dict.items():
+            # Register all generators and operations.
             if isinstance(attr, operation):
                 attr.stew = self
 
-                # Register all generators and references.
                 if isinstance(attr, generator):
                     self.generators[attr.fn.__qualname__] = attr
                 else:
                     self.operations[attr.fn.__qualname__] = attr
 
-        new_cls = type(cls.__name__, cls.__bases__, cls_dict)
+            # Initialize abstract sorts that have a default implementation.
+            if isinstance(attr, AbstractSort):
+                if attr.default != None:
+                    cls_dict[name] = attr.default
+
+        new_cls = type(cls.__name__, (cls, ), cls_dict)
 
         # Register the new sort under its given class name.
-        self.sorts[new_cls.__name__] = new_cls
+        self.sorts[new_cls.__sortname__] = new_cls
         return new_cls
 
     def generator(self, fn):
@@ -80,6 +93,19 @@ class Stew(object):
     def operation(self, fn):
         self.operations[fn.__qualname__] = operation(fn, self)
         return self.operations[fn.__qualname__]
+
+    def specialize(self, cls, **implementations):
+        abstract_names = sorted(implementations.keys())
+
+        specialization_dict = dict(cls.__dict__)
+        specialization_dict['__sortname__'] = (
+            cls.__name__ + '_specialized_with_' +
+            '_'.join(implementations[n].__sortname__ for n in abstract_names))
+        for name in abstract_names:
+            specialization_dict[name] = implementations[name]
+
+        specialization = SortBase(cls.__name__, (cls,), specialization_dict)
+        return self.sort(specialization)
 
 
 class operation(object):
@@ -119,8 +145,9 @@ class operation(object):
             raise RewritingError('Failed to apply %s().' % self.fn.__qualname__)
 
     def __str__(self):
-        domain = ', '.join('%s:%s' % (name, sort.__name__) for name, sort in self.domain.items())
-        return '(%s) -> %s' % (domain, self.codomain.__name__)
+        domain = ', '.join(
+            '%s:%s' % (name, sort.__sortname__) for name, sort in self.domain.items())
+        return '(%s) -> %s' % (domain, self.codomain.__sortname__)
 
 
 class generator(operation):
@@ -154,7 +181,8 @@ class generator(operation):
 
             if not (isinstance(value, Var) or isinstance(value, sort)):
                 raise ArgumentError(
-                    "'%s' should be a variable or a term of sort '%s'." % (name, sort.__name__))
+                    "'%s' should be a variable or a term of sort '%s'." %
+                    (name, sort.__sortname__))
 
             rv._generator_args[name] = kwargs[name]
 
@@ -191,6 +219,10 @@ class SortBase(type):
                 sort_attributes.append(name)
         attrs['__attributes__'] = tuple(sort_attributes)
 
+        # Give a default __sortname__ if none was specified.
+        if not '__sortname__' in attrs:
+            attrs['__sortname__'] = classname
+
         # Create the sort class and bind recursive references.
         new_sort = type.__new__(cls, classname, bases, attrs)
         object.__setattr__(SortBase._recursive_references[classname], '__proxied__', new_sort)
@@ -216,7 +248,7 @@ class Sort(metaclass=SortBase):
             if not (isinstance(value, Var) or isinstance(value, attribute.domain)):
                 raise ArgumentError(
                     "'%s' should be a variable or a term or of sort '%s'." %
-                    (name, attribute.domain.__name__))
+                    (name, attribute.domain.__sortname__))
 
             setattr(self, name, value)
 
