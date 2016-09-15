@@ -1,7 +1,41 @@
+from contextlib import contextmanager
+from threading import local
+
 from .exceptions import MatchError
 
 
-def matches(term, pattern, match_result):
+_local_data = local()
+_local_data.context_stack = []
+
+def _find_rewriting_context():
+    try:
+        return _local_data.context_stack[-1]
+    except IndexError:
+        raise RuntimeError('Working outside of a rewriting context.')
+
+
+@contextmanager
+def push_context():
+    _local_data.context_stack.append(RewritingContext())
+    yield _local_data.context_stack[-1]
+    del _local_data.context_stack[-1]
+
+
+@contextmanager
+def matches(*args):
+    current_context = _find_rewriting_context()
+
+    match_result = {}
+    for term, pattern in args:
+        current_context.writable &= _matches(term, pattern, match_result)
+    try:
+        yield MatchResult(**match_result)
+    except MatchError:
+        pass
+    current_context.writable = True
+
+
+def _matches(term, pattern, match_result):
     if isinstance(pattern, Var):
         # If the variable is not bound to any value, we can bind it to the
         # current term and we have a match. Otherwise, we should also make
@@ -23,7 +57,7 @@ def matches(term, pattern, match_result):
                 return True
 
             for name in term._generator_args:
-                if not matches(
+                if not _matches(
                         term._generator_args[name], pattern._generator_args[name], match_result):
                     return False
             return True
@@ -39,6 +73,15 @@ def matches(term, pattern, match_result):
         return True
 
     return False
+
+
+@contextmanager
+def if_(condition):
+    current_context = _find_rewriting_context()
+
+    current_context.writable &= condition() if callable(condition) else condition
+    yield
+    current_context.writable = True
 
 
 class and_(object):

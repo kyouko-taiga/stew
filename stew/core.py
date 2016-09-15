@@ -1,143 +1,53 @@
+import inspect
+
 from contextlib import contextmanager
 from functools import update_wrapper
 
-from .exceptions import ArgumentError, MatchError, RewritingError
-from .proxy import Proxy
-from .rewriting import MatchResult, RewritingContext, Var, matches
-from .types.abstract import AbstractSort
+from .exceptions import ArgumentError, RewritingError
+from .rewriting import Var, matches, push_context
 
 
 undefined = object()
 
 
-class Stew(object):
-
-    def __init__(self):
-        self.sorts = {}
-        self.generators = {}
-        self.operations = {}
-
-        self._rewriting_context = None
-
-    @property
-    @contextmanager
-    def rewriting_context(self):
-        self._rewriting_context = RewritingContext()
-        yield self._rewriting_context
-        self._rewriting_context = None
-
-    @contextmanager
-    def matches(self, *args):
-        if self._rewriting_context is None:
-            raise RuntimeError('Working outside of a rewriting context.')
-
-        match_result = {}
-        for term, pattern in args:
-            self._rewriting_context.writable &= matches(term, pattern, match_result)
-        try:
-            yield MatchResult(**match_result)
-        except MatchError:
-            pass
-        self._rewriting_context.writable = True
-
-    @contextmanager
-    def if_(self, condition):
-        if self._rewriting_context is None:
-            raise RuntimeError('Working outside of a rewriting context.')
-
-        self._rewriting_context.writable = condition() if callable(condition) else condition
-        yield
-        self._rewriting_context.writable = True
-
-    def sort(self, cls):
-        # Check if we already registered a different class under the name of
-        # the class being decorated.
-        if cls.__sortname__ in self.sorts:
-            registered = self.sorts[cls.__sortname__]
-            if (registered is cls) or (registered.__wrapped__ is cls):
-                return registered
-            raise SyntaxError('Duplicate Sort: %s.' % cls.__sortname__)
-
-        # Create a new that references this stew.
-        cls_dict = dict(cls.__dict__)
-        cls_dict['stew'] = self
-
-        # Keep a reference to the decorated class.
-        cls_dict['__wrapped__'] = cls
-
-        for name, attr in cls_dict.items():
-            # Register all generators and operations.
-            if isinstance(attr, operation):
-                attr.stew = self
-
-                if isinstance(attr, generator):
-                    self.generators[attr.fn.__qualname__] = attr
-                else:
-                    self.operations[attr.fn.__qualname__] = attr
-
-            # Initialize abstract sorts that have a default implementation.
-            if isinstance(attr, AbstractSort):
-                if attr.default != None:
-                    cls_dict[name] = attr.default
-
-        new_cls = type(cls.__name__, (cls, ), cls_dict)
-
-        # Register the new sort under its given class name.
-        self.sorts[new_cls.__sortname__] = new_cls
-        return new_cls
-
-    def generator(self, fn):
-        self.generators[fn.__qualname__] = generator(fn, self)
-        return self.generators[fn.__qualname__]
-
-    def operation(self, fn):
-        self.operations[fn.__qualname__] = operation(fn, self)
-        return self.operations[fn.__qualname__]
-
-    def specialize(self, cls, **implementations):
-        abstract_names = sorted(implementations.keys())
-
-        specialization_dict = dict(cls.__dict__)
-        specialization_dict['__sortname__'] = (
-            cls.__name__ + '_specialized_with_' +
-            '_'.join(implementations[n].__sortname__ for n in abstract_names))
-        for name in abstract_names:
-            specialization_dict[name] = implementations[name]
-
-        specialization = SortBase(cls.__name__, (cls,), specialization_dict)
-        return self.sort(specialization)
-
-
 class operation(object):
 
-    def __init__(self, fn, stew=None):
+    def __init__(self, fn):
         self.fn = fn
-        self.stew = stew
+        self._rewriting_context = None
 
         # Get the domain and codomain of the generator.
         annotations = dict(fn.__annotations__)
         try:
-            self.codomain = annotations.pop('return')
+            self._codomain = annotations.pop('return')
         except KeyError:
             raise SyntaxError('Undefined codomain for %s().' % fn.__qualname__)
-        self.domain = annotations
+        self._domain = annotations
+
+    @property
+    def domain(self):
+        fn_cls = _function_class(self.fn)
+        return {
+            name: fn_cls if sort is SortBase.recursive_reference else sort
+            for name, sort in self._domain.items()
+        }
+
+    @property
+    def codomain(self):
+        fn_cls = _function_class(self.fn)
+        return fn_cls if self._codomain is SortBase.recursive_reference else self._codomain
 
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
 
         new_fn = self.fn.__get__(instance, owner)
-        return self.__class__(new_fn, self.stew)
+        return self.__class__(new_fn)
 
     def __call__(self, *args, **kwargs):
         # TODO Type checking
 
-        if self.stew is None:
-            raise RuntimeError(
-                'Undefined stew. Did you forget to decorate %s()?' %
-                self.fn.__qualname__)
-
-        with self.stew.rewriting_context as context:
+        with push_context() as context:
             for item in self.fn(*args, **kwargs):
                 if context.writable:
                     return item
@@ -202,14 +112,22 @@ class Attribute(object):
 
 class SortBase(type):
 
-    _recursive_references = {}
+    recursive_reference = object()
 
     @classmethod
     def __prepare__(metacls, name, bases, **kwargs):
-        # Inject the class name in the namespace before its body is executed
-        # so that annotations can use it to denote morphisms and generators.
-        SortBase._recursive_references[name] = Proxy()
-        return {name: SortBase._recursive_references[name]}
+
+        # To handle recursive references in sort definitions, we need to get
+        # the class in which functions that use such references we defined
+        # lazily. However, since sorts can be dynamically specialized, we
+        # can't simply inject the reference to the newly created class just
+        # after we built it in the metaclass, otherwise inherited class will
+        # wrongly reference their parent.
+        # So as to tackle this issue, we set those recursive references to
+        # `SortBase.recursive_reference`, so that we can later compute the
+        # class it should refer to.
+
+        return {name: SortBase.recursive_reference}
 
     def __new__(cls, classname, bases, attrs):
         # Register class attributes.
@@ -223,9 +141,8 @@ class SortBase(type):
         if not '__sortname__' in attrs:
             attrs['__sortname__'] = classname
 
-        # Create the sort class and bind recursive references.
+        # Create the sort class.
         new_sort = type.__new__(cls, classname, bases, attrs)
-        object.__setattr__(SortBase._recursive_references[classname], '__proxied__', new_sort)
 
         return new_sort
 
@@ -261,15 +178,26 @@ class Sort(metaclass=SortBase):
         return self._generator is not None
 
     def matches(self, pattern):
-        if not hasattr(self, 'stew'):
-            raise RuntimeError(
-                'Undefined stew. Did you forget to decorate?' % self.__class__.__qualname__)
-
-        return self.stew.matches((self, pattern))
+        return matches((self, pattern))
 
     def where(self, **kwargs):
         return self.__class__(
             **{name: kwargs.get(name, getattr(self, name)) for name in self.__attributes__})
+
+    @classmethod
+    def specialize(cls, sortname=None, **implementations):
+        abstract_names = sorted(implementations.keys())
+
+        sortname = sortname or (
+            cls.__name__ + '_specialized_with_' +
+            '_'.join(implementations[n].__sortname__ for n in abstract_names))
+
+        specialization_dict = dict(cls.__dict__)
+        specialization_dict['__sortname__'] = sortname
+        for name in abstract_names:
+            specialization_dict[name] = implementations[name]
+
+        return SortBase(sortname, (cls,), specialization_dict)
 
     def __hash__(self):
         if self._is_a_constant:
@@ -310,3 +238,19 @@ class Sort(metaclass=SortBase):
 
     def __repr__(self):
         return repr(str(self))
+
+
+def _function_class(fn):
+
+    # This function allows us to retrieve the class that defined the given
+    # method. It relies on parsing it's __qualname__, which is usually
+    # strongly discouraged. However we can't use it's __self__ because
+    # generators aren't considered methods by inspect.ismethod.
+
+    cls = getattr(
+        inspect.getmodule(fn),
+        fn.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0])
+
+    if isinstance(cls, type):
+        return cls
+    return None
