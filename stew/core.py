@@ -1,10 +1,12 @@
 import inspect
+import ast
+import astunparse
 
-from contextlib import contextmanager
 from functools import update_wrapper
+from types import FunctionType, MethodType
 
 from .exceptions import ArgumentError, RewritingError
-from .rewriting import Var, matches, push_context
+from .matching import Var, push_context, matches
 
 
 undefined = object()
@@ -13,9 +15,6 @@ undefined = object()
 class operation(object):
 
     def __init__(self, fn):
-        self.fn = fn
-        self._rewriting_context = None
-
         # Get the domain and codomain of the generator.
         annotations = dict(fn.__annotations__)
         try:
@@ -23,6 +22,22 @@ class operation(object):
         except KeyError:
             raise SyntaxError('Undefined codomain for %s().' % fn.__qualname__)
         self._domain = annotations
+
+        if hasattr(fn, '_original'):
+            self.fn = fn
+        else:
+            # Rewrite the operation so that its if statements are wrapped
+            # within a matching context.
+            node = ast.parse(_unindent(inspect.getsource(fn)))
+            node = _RewriteOperation().visit(node)
+
+            src = astunparse.unparse(node)
+            exec(compile(src, filename='', mode='exec'))
+
+            self.fn = locals()['_fn']
+            update_wrapper(self.fn, fn)
+            self.fn.__qualname__ = fn.__qualname__
+            self.fn._original = fn
 
     @property
     def domain(self):
@@ -41,23 +56,31 @@ class operation(object):
         if instance is None:
             return self
 
-        new_fn = self.fn.__get__(instance, owner)
-        return self.__class__(new_fn)
+        new_mtd = MethodType(self._prepare_fn(), instance)
+        return self.__class__(new_mtd)
 
     def __call__(self, *args, **kwargs):
         # TODO Type checking
 
-        with push_context() as context:
-            for item in self.fn(*args, **kwargs):
-                if context.writable:
-                    return item
+        if inspect.ismethod(self.fn):
+            fn = self.fn
+        else:
+            fn = self._prepare_fn()
 
+        rv = fn(*args, **kwargs)
+        if rv is None:
             raise RewritingError('Failed to apply %s().' % self.fn.__qualname__)
+        return rv
 
     def __str__(self):
         domain = ', '.join(
             '%s:%s' % (name, sort.__sortname__) for name, sort in self.domain.items())
         return '(%s) -> %s' % (domain, self.codomain.__sortname__)
+
+    def _prepare_fn(self):
+        fn_globals = dict(self.fn._original.__globals__)
+        fn_globals['push_context'] = push_context
+        return update_wrapper(FunctionType(self.fn.__code__, fn_globals), self.fn)
 
 
 class generator(operation):
@@ -177,9 +200,6 @@ class Sort(metaclass=SortBase):
     def _is_a_constant(self):
         return self._generator is not None
 
-    def matches(self, pattern):
-        return matches((self, pattern))
-
     def where(self, **kwargs):
         return self.__class__(
             **{name: kwargs.get(name, getattr(self, name)) for name in self.__attributes__})
@@ -210,6 +230,12 @@ class Sort(metaclass=SortBase):
         return hash(tuple((name, getattr(self, name)) for name in self.__attributes__))
 
     def __eq__(self, other):
+        return matches(self, other)
+
+    def equiv(self, other):
+        if isinstance(other, Var):
+            return True
+
         if self._is_a_constant:
             if (self._generator != other._generator):
                 return False
@@ -254,3 +280,48 @@ def _function_class(fn):
     if isinstance(cls, type):
         return cls
     return None
+
+
+def _unindent(src):
+    indentation = len(src) - len(src.lstrip())
+    return '\n'.join([line[indentation:] for line in src.split('\n')])
+
+
+class _RewriteOperation(ast.NodeTransformer):
+
+    def visit_FunctionDef(self, node):
+
+        # We have to rename the function so we're sure its name won't collide
+        # with a local variable of operation.__init__. We also have to remove
+        # its annotations, so that we don't need to import the sorts of its
+        # domain and codomain when we'll recompile it. Finally, we have to
+        # remove the function decorators so they don't get executed twice.
+
+        return ast.FunctionDef(
+            name='_fn',
+            args=ast.arguments(
+                args=[ast.arg(arg=arg.arg, annotation=None) for arg in node.args.args],
+                vararg=node.args.vararg,
+                kwonlyargs=node.args.kwonlyargs,
+                kwarg=node.args.kwarg,
+                defaults=node.args.defaults,
+                kw_defaults=node.args.kw_defaults),
+            body=[_WrapIfStatements().visit(child) for child in node.body],
+            returns=None,
+            decorator_list=[])
+
+
+class _WrapIfStatements(ast.NodeTransformer):
+
+    def visit_If(self, node):
+        push_context_call = ast.Call(
+            func=ast.Name(id='push_context', ctx='Load'),
+            args=[],
+            keywords=[])
+
+        return ast.With(
+            items=[ast.withitem(context_expr=push_context_call, optional_vars=None)],
+            body=[ast.If(
+                test=node.test,
+                body=node.body,
+                orelse=[_WrapIfStatements().visit(child) for child in node.orelse])])

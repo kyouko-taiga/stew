@@ -11,32 +11,31 @@ class Bool(Sort):
 
     @operation
     def __invert__(self: Bool) -> Bool:
-        # ~true = false
-        with self.matches(Bool.true()):
-            yield Bool.false()
-
-        # ~false = true
-        with self.matches(Bool.false()):
-            yield Bool.true()
+        if self == Bool.true():
+            return Bool.false()
+        return Bool.true()
 
     @operation
     def __and__(self: Bool, other: Bool) -> Bool:
-        with self.stew.matches((self, Bool.true()), (other, Bool.true())):
-            yield Bool.true()
-        yield Bool.false()
+        if (self == Bool.true()) and (other == Bool.true()):
+            return Bool.true()
+        return Bool.false()
 
     @operation
     def __or__(self: Bool, other: Bool) -> Bool:
-        with self.matches(Bool.true()):
-            yield Bool.true()
-        with other.matches(Bool.true()):
-            yield Bool.true()
-        yield Bool.false()
+        if self == Bool.true():
+            return Bool.true()
+        if other == Bool.true():
+            return Bool.true()
+        return Bool.false()
 
     @operation
     def __xor__(self: Bool, other: Bool) -> Bool:
-        with self.stew.matches((self, Bool.true()), (other, Bool.false())):
-            yield Bool.true()
-        with self.stew.matches((self, Bool.false()), (other, Bool.true())):
-            yield Bool.true()
-        yield Bool.false()
+        if (self == Bool.true()) and (other == Bool.false()):
+            return Bool.true()
+        if (self == Bool.false()) and (other == Bool.true()):
+            return Bool.true()
+        return Bool.false()
+
+    def __bool__(self):
+        return self == Bool.true()
