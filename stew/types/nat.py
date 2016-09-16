@@ -1,6 +1,8 @@
 from ..core import Sort, generator, operation
 from ..exceptions import ArgumentError
-from ..rewriting import Var
+from ..matching import var
+
+from .bool import Bool
 
 
 class Nat(Sort):
@@ -30,40 +32,83 @@ class Nat(Sort):
 
     @operation
     def __add__(self: Nat, other: Nat) -> Nat:
-        x = Var('x')
-
         # zero + y = y
-        with self.matches(Nat.zero()):
-            yield other
+        if self == Nat.zero():
+            return other
 
         # suc(x) + y = suc(x + y)
-        with self.matches(Nat.suc(x)) as match:
-            yield Nat.suc(match.x + other)
+        if self == Nat.suc(var.x):
+            return Nat.suc(var.x + other)
 
     @operation
     def __sub__(self: Nat, other: Nat) -> Nat:
-        x = Var('x')
-        y = Var('y')
-
         # x - 0 = x
-        with other.matches(Nat.zero()):
-            yield self
+        if other == Nat.zero():
+            return self
 
         # suc(x) - suc(y) = x - y
-        with self.stew.matches((self, Nat.suc(x)), (other, Nat.suc(y))) as match:
-            yield match.x - match.y
+        if self == Nat.suc(var.x) and other == Nat.suc(var.y):
+            return var.x - var.y
 
     @operation
     def __mul__(self: Nat, other: Nat) -> Nat:
-        x = Var('x')
-
         # 0 * y = 0
-        with self.matches(Nat.zero()):
-            yield Nat.zero()
+        if self == Nat.zero():
+            return Nat.zero()
 
         # suc(x) * y = x * y + y
-        with self.matches(Nat.suc(x)) as match:
-            yield match.x * other + other
+        if self == Nat.suc(var.x):
+            return var.x * other + other
+
+    @operation
+    def __truediv__(self: Nat, other: Nat) -> Nat:
+        # if x < y then x / y = 0
+        if self < other:
+            return Nat.zero()
+
+        # if (x >= y) and (y != 0) then x / y = suc((x - y) / y)
+        if (self >= other) and (other != Nat.zero()):
+            return Nat.suc((self - other) / other)
+
+    @operation
+    def __mod__(self: Nat, other: Nat) -> Nat:
+        # if y != 0 then x % y = x - (y * (x / y))
+        if other != Nat.zero():
+            return self - (other * (self / other))
+
+    @operation
+    def __lt__(self: Nat, other: Nat) -> Bool:
+        # 0 < 0 = false
+        if (self ==  Nat.zero()) and (other == Nat.zero()):
+            return Bool.false()
+
+        # 0 < suc(y) = true
+        if (self == Nat.zero()) and (other, Nat.suc(var.y)):
+            return Bool.true()
+
+        # suc(x) < 0 = false
+        if (self == Nat.suc(var.x)) and (other == Nat.zero()):
+            return Bool.false()
+
+        # suc(x) < suc(y) = x < y
+        if (self == Nat.suc(var.x)) and (other == Nat.suc(var.y)):
+            return var.x < var.y
+
+    @operation
+    def __le__(self: Nat, other: Nat) -> Bool:
+        if self == other:
+            return Bool.true()
+        return self < other
+
+    @operation
+    def __ge__(self: Nat, other: Nat) -> Bool:
+        if self == other:
+            return Bool.true()
+        return self > other
+
+    @operation
+    def __gt__(self: Nat, other: Nat) -> Bool:
+        return ~(self <= other)
 
     def _as_int(self):
         if self._generator == Nat.zero:
