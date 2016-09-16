@@ -20,6 +20,9 @@ setup(
     packages=['stew'],
     include_package_data=True,
     platforms='any',
+    install_requires=[
+        'astunparse>=1.4.0'
+    ],
     test_suite='tests',
     classifiers=[
         'Intended Audience :: Developers',
