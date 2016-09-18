@@ -1,6 +1,6 @@
-import inspect
 import ast
 import astunparse
+import inspect
 
 from functools import update_wrapper
 from types import FunctionType, MethodType
@@ -102,7 +102,7 @@ class operation(generator):
             node = _RewriteOperation().visit(node)
 
             src = astunparse.unparse(node)
-            exec(compile(src, filename='', mode='exec'))
+            exec(compile(src, filename=inspect.getsourcefile(fn), mode='exec'))
 
             self.fn = locals()['_fn']
             update_wrapper(self.fn, fn)
@@ -124,7 +124,22 @@ class operation(generator):
         else:
             fn = self._prepare_fn()
 
-        rv = fn(*args, **kwargs)
+        try:
+            rv = fn(*args, **kwargs)
+        except Exception as e:
+            # Inspect where the original function was defined so we can raise
+            # a more helpful exception.
+            source_file = inspect.getsourcefile(self.fn._original)
+            source_line = inspect.getsourcelines(self.fn._original)[1]
+            raise RewritingError(
+                '%(file)s, in %(fn)s (line %(line)s)\n%(error)s: %(message)s' % {
+                    'file': source_file,
+                    'line': source_line,
+                    'fn': self.fn.__qualname__,
+                    'error': e.__class__.__name__,
+                    'message': str(e)
+                })
+
         if rv is None:
             raise RewritingError('Failed to apply %s().' % self.fn.__qualname__)
         return rv
