@@ -211,7 +211,7 @@ class Sort(metaclass=SortBase):
 
             if not (isinstance(value, Var) or isinstance(value, attribute.domain)):
                 raise ArgumentError(
-                    "'%s' should be a variable or a term or of sort '%s'." %
+                    "'%s' should be a variable or a term of sort '%s'." %
                     (name, attribute.domain.__sortname__))
 
             setattr(self, name, value)
