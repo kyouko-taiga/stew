@@ -289,6 +289,8 @@ def _unindent(src):
 
 class _RewriteOperation(ast.NodeTransformer):
 
+    _push_context_call = ast.parse('push_context()').body[0].value
+
     def visit_FunctionDef(self, node):
 
         # We have to rename the function so we're sure its name won't collide
@@ -297,28 +299,31 @@ class _RewriteOperation(ast.NodeTransformer):
         # domain and codomain when we'll recompile it. Finally, we have to
         # remove the function decorators so they don't get executed twice.
 
-        return ast.FunctionDef(
+        return self._update(
+            node,
             name='_fn',
-            args=ast.arguments(
-                args=[ast.arg(arg=arg.arg, annotation=None) for arg in node.args.args],
-                vararg=node.args.vararg,
-                kwonlyargs=node.args.kwonlyargs,
-                kwarg=node.args.kwarg,
-                defaults=node.args.defaults,
-                kw_defaults=node.args.kw_defaults),
-            body=[_WrapIfStatements().visit(child) for child in node.body],
+            args=self._update(
+                node.args,
+                args=[self._update(arg, annotation=None) for arg in node.args.args]),
+            body=[self.visit(child) for child in node.body],
             returns=None,
             decorator_list=[])
 
-
-class _WrapIfStatements(ast.NodeTransformer):
+    def visit_Return(self, node):
+        if type(node.value) == ast.IfExp:
+            return self._wrap(node)
+        return node
 
     def visit_If(self, node):
-        push_context_call = ast.parse('push_context()').body[0].value
+        return self._wrap(ast.If(
+            test=node.test,
+            body=node.body,
+            orelse=[self.visit(child) for child in node.orelse]))
 
+    def _wrap(self, node):
         return ast.With(
-            items=[ast.withitem(context_expr=push_context_call, optional_vars=None)],
-            body=[ast.If(
-                test=node.test,
-                body=node.body,
-                orelse=[_WrapIfStatements().visit(child) for child in node.orelse])])
+            items=[ast.withitem(context_expr=self._push_context_call, optional_vars=None)],
+            body=[node])
+
+    def _update(self, node, **kwargs):
+        return type(node)(**{name: kwargs.get(name, getattr(node, name)) for name in node._fields})
