@@ -314,10 +314,7 @@ class _RewriteOperation(ast.NodeTransformer):
 class _WrapIfStatements(ast.NodeTransformer):
 
     def visit_If(self, node):
-        push_context_call = ast.Call(
-            func=ast.Name(id='push_context', ctx='Load'),
-            args=[],
-            keywords=[])
+        push_context_call = ast.parse('push_context()').body[0].value
 
         return ast.With(
             items=[ast.withitem(context_expr=push_context_call, optional_vars=None)],
