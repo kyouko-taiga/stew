@@ -12,7 +12,7 @@ from .matching import Var, push_context, matches
 undefined = object()
 
 
-class operation(object):
+class generator(object):
 
     def __init__(self, fn):
         # Get the domain and codomain of the generator.
@@ -22,22 +22,7 @@ class operation(object):
         except KeyError:
             raise SyntaxError('Undefined codomain for %s().' % fn.__qualname__)
         self._domain = annotations
-
-        if hasattr(fn, '_original'):
-            self.fn = fn
-        else:
-            # Rewrite the operation so that its if statements are wrapped
-            # within a matching context.
-            node = ast.parse(_unindent(inspect.getsource(fn)))
-            node = _RewriteOperation().visit(node)
-
-            src = astunparse.unparse(node)
-            exec(compile(src, filename='', mode='exec'))
-
-            self.fn = locals()['_fn']
-            update_wrapper(self.fn, fn)
-            self.fn.__qualname__ = fn.__qualname__
-            self.fn._original = fn
+        self.fn = fn
 
     @property
     def domain(self):
@@ -56,34 +41,8 @@ class operation(object):
         if instance is None:
             return self
 
-        new_mtd = MethodType(self._prepare_fn(), instance)
-        return self.__class__(new_mtd)
-
-    def __call__(self, *args, **kwargs):
-        # TODO Type checking
-
-        if inspect.ismethod(self.fn):
-            fn = self.fn
-        else:
-            fn = self._prepare_fn()
-
-        rv = fn(*args, **kwargs)
-        if rv is None:
-            raise RewritingError('Failed to apply %s().' % self.fn.__qualname__)
-        return rv
-
-    def __str__(self):
-        domain = ', '.join(
-            '%s:%s' % (name, sort.__sortname__) for name, sort in self.domain.items())
-        return '(%s) -> %s' % (domain, self.codomain.__sortname__)
-
-    def _prepare_fn(self):
-        fn_globals = dict(self.fn._original.__globals__)
-        fn_globals['push_context'] = push_context
-        return update_wrapper(FunctionType(self.fn.__code__, fn_globals), self.fn)
-
-
-class generator(operation):
+        new_fn = self.fn.__get__(instance, owner)
+        return self.__class__(new_fn)
 
     def __call__(self, *args, **kwargs):
         # Initialize all sorts arguments with `undefined`.
@@ -124,6 +83,56 @@ class generator(operation):
                 '%s() missing argument(s): %s' % (self.fn.__qualname__, ', '.join(missing)))
 
         return rv
+
+    def __str__(self):
+        domain = ', '.join(
+            '%s:%s' % (name, sort.__sortname__) for name, sort in self.domain.items())
+        return '(%s) -> %s' % (domain, self.codomain.__sortname__)
+
+
+class operation(generator):
+
+    def __init__(self, fn):
+        super().__init__(fn)
+
+        if not hasattr(fn, '_original'):
+            # Rewrite the operation so that its if statements are wrapped
+            # within a matching context.
+            node = ast.parse(_unindent(inspect.getsource(fn)))
+            node = _RewriteOperation().visit(node)
+
+            src = astunparse.unparse(node)
+            exec(compile(src, filename='', mode='exec'))
+
+            self.fn = locals()['_fn']
+            update_wrapper(self.fn, fn)
+            self.fn.__qualname__ = fn.__qualname__
+            self.fn._original = fn
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+
+        new_mtd = MethodType(self._prepare_fn(), instance)
+        return self.__class__(new_mtd)
+
+    def __call__(self, *args, **kwargs):
+        # TODO Type checking
+
+        if inspect.ismethod(self.fn):
+            fn = self.fn
+        else:
+            fn = self._prepare_fn()
+
+        rv = fn(*args, **kwargs)
+        if rv is None:
+            raise RewritingError('Failed to apply %s().' % self.fn.__qualname__)
+        return rv
+
+    def _prepare_fn(self):
+        fn_globals = dict(self.fn._original.__globals__)
+        fn_globals['push_context'] = push_context
+        return update_wrapper(FunctionType(self.fn.__code__, fn_globals), self.fn)
 
 
 class Attribute(object):
