@@ -8,8 +8,11 @@ class TestSort(unittest.TestCase):
 
     def test_specialization(self):
 
-        class S(Sort): pass
-        class T(Sort): pass
+        class S(Sort):
+            pass
+
+        class T(Sort):
+            pass
 
         class Unspecialized(Sort):
 

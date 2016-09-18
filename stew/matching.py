@@ -7,6 +7,7 @@ from .exceptions import MatchError
 _local_data = local()
 _local_data.context_stack = []
 
+
 def _find_matching_context():
     try:
         return _local_data.context_stack[-1]

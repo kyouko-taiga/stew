@@ -170,7 +170,7 @@ class SortBase(type):
         attrs['__attributes__'] = tuple(sort_attributes)
 
         # Give a default __sortname__ if none was specified.
-        if not '__sortname__' in attrs:
+        if '__sortname__' not in attrs:
             attrs['__sortname__'] = classname
 
         # Create the sort class.

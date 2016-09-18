@@ -79,7 +79,7 @@ class Nat(Sort):
     @operation
     def __lt__(self: Nat, other: Nat) -> Bool:
         # 0 < 0 = false
-        if (self ==  Nat.zero()) and (other == Nat.zero()):
+        if (self == Nat.zero()) and (other == Nat.zero()):
             return Bool.false()
 
         # 0 < suc(y) = true
