@@ -10,12 +10,12 @@ class _Strategy(Sort):
 
     def __call__(self, terms):
         if not isinstance(terms, (set, frozenset)):
-            terms = frozenset([terms])
+            terms = set([terms])
 
         attributes = {name: getattr(self, name) for name in self.__attributes__}
         rv = set()
         for term in terms:
-            term = self.fn(term=term, **attributes)
+            term = self.fn(**attributes)(term)
             if isinstance(term, (set, frozenset)):
                 rv |= term
             else:
@@ -39,18 +39,23 @@ def strategy(*args, **kwargs):
 
 
 @strategy
-def identity(term):
-    return term
+def identity():
+    return lambda term: term
 
 
 class union(_Strategy):
 
-    left = Attribute(domain=Sort)
-    right = Attribute(domain=Sort)
+    left = Attribute(domain=_Strategy)
+    right = Attribute(domain=_Strategy)
 
     def __init__(self, *operands):
-        def fn(left, right, term):
-            return left(term) | right(term)
+        # "cast" operands as strategies if there aren't.
+        for i in range(len(operands)):
+            if not isinstance(operands[i], _Strategy):
+                operands[i] = strategy(operands[i])
+
+        def fn(left, right):
+            return lambda term: left(term) | right(term)
 
         if len(operands) < 2:
             raise ArgumentError('%s requires at least 2 operands.' % self.__class__.__name__)
@@ -64,7 +69,7 @@ class fixpoint(_Strategy):
 
     def __call__(self, terms):
         if not isinstance(terms, (set, frozenset)):
-            terms = frozenset([terms])
+            terms = set([terms])
 
         rv = self.fn(terms)
         while rv != terms:
