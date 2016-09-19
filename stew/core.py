@@ -25,6 +25,10 @@ class generator(object):
         self.fn = fn
 
     @property
+    def __name__(self):
+        return self.fn.__name__
+
+    @property
     def domain(self):
         fn_cls = _function_class(self.fn)
         return {
@@ -58,6 +62,8 @@ class generator(object):
             return rv
 
         # Allow to call generators with a single positional argument.
+        if len(args) > 1:
+            raise ArgumentError('Use of multiple positional arguments is forbidden.')
         if (len(self.domain) == 1) and (len(args) == 1):
             kwargs.update([(list(self.domain.keys())[0], args[0])])
 
@@ -108,6 +114,7 @@ class operation(generator):
             update_wrapper(self.fn, fn)
             self.fn.__qualname__ = fn.__qualname__
             self.fn._original = fn
+            self.fn._nonlocals = inspect.getclosurevars(self.fn._original).nonlocals
 
     def __get__(self, instance, owner=None):
         if instance is None:
@@ -145,9 +152,16 @@ class operation(generator):
         return rv
 
     def _prepare_fn(self):
+        # Inject push_context into the function scope.
         fn_globals = dict(self.fn._original.__globals__)
         fn_globals['push_context'] = push_context
-        return update_wrapper(FunctionType(self.fn.__code__, fn_globals), self.fn)
+
+        # Inject non-local variables of the original function into the
+        # function scope.
+        fn_globals.update(self.fn._nonlocals)
+
+        f = FunctionType(self.fn.__code__, fn_globals)
+        return update_wrapper(f, self.fn)
 
 
 class Attribute(object):
@@ -196,9 +210,15 @@ class SortBase(type):
 
 class Sort(metaclass=SortBase):
 
-    def __init__(self, **kwargs):
+    def __init__(self, *args, **kwargs):
         self._generator = None
         self._generator_args = None
+
+        # Allow to call generators with a single positional argument.
+        if len(args) > 1:
+            raise ArgumentError('Use of multiple positional arguments is forbidden.')
+        if (len(self.__attributes__) == 1) and (len(args) == 1):
+            kwargs.update({self.__attributes__[0]: args[0]})
 
         # Initialize the instance attribute.
         missing = []
