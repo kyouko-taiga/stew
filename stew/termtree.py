@@ -1,4 +1,6 @@
+from .core import Attribute, generator
 from .matching import Var
+from .exceptions import TranslationError
 
 
 class TermTreeType(type):
@@ -22,7 +24,15 @@ class TermTreeType(type):
     def __new__(cls, classname, bases, attrs):
         def make_method(name):
             def method(self, *args, **kwargs):
-                return TermTree(name, (self,) + args, kwargs)
+                if self.domain is None:
+                    raise TranslationError('Cannot infer the type of %s.%s.' % (self.name, name))
+
+                return TermTree(
+                    name=getattr(self.domain, name),
+                    domain=getattr(self.domain, name).codomain,
+                    positional_args=(self,) + args,
+                    named_args=kwargs)
+
             return method
 
         for name in cls._special_names:
@@ -34,10 +44,11 @@ class TermTreeType(type):
 
 class TermTree(metaclass=TermTreeType):
 
-    def __init__(self, name, positional_arguments=None, named_arguments=None):
+    def __init__(self, name, domain=None, positional_args=None, named_args=None):
         self.name = name
-        self.positional_arguments = positional_arguments or []
-        self.named_arguments = named_arguments or {}
+        self.domain = domain
+        self.positional_args = positional_args or []
+        self.named_args = named_args or {}
 
 
 class TermTreeManager(object):
