@@ -20,3 +20,10 @@ class RewritingError(StewError):
     """
     Raised when an operation couldn't be rewritten by an operation.
     """
+
+
+class TranslationError(StewError):
+    """
+    Raised for errors related to the translation of a stew signature to
+    another term rewriting system.
+    """

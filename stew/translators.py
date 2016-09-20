@@ -1,0 +1,232 @@
+import ast
+import astunparse
+import inspect
+
+from .core import Sort, generator, operation
+from .exceptions import TranslationError
+from .termtree import TermTree, TermTreeManager
+
+
+class Translator(object):
+
+    def __init__(self):
+        self.sorts = {}
+        self.generators = {}
+        self.operations = {}
+
+    def register(self, obj, name=None):
+        if isinstance(obj, type) and issubclass(obj, Sort):
+            # Check that the sort wasn't already registered.
+            if obj in self.sorts:
+                return
+
+            name = name or obj.__qualname__
+            self.sorts[obj] = name
+
+            # Register the sort generators and operations.
+            for attr_name, attr_value in obj.__dict__.items():
+                if isinstance(attr_value, (generator, operation)):
+                    self.register(attr_value, name + '.' + attr_name)
+
+        elif isinstance(obj, operation):
+            self.operations[obj] = name or obj.__name__
+
+        elif isinstance(obj, generator):
+            self.generators[obj] = name or obj.__name__
+
+        else:
+            raise TranslationError(
+                "'%s' should be a sort, a generator, an operation or a strategy." % obj)
+
+    def translate(self):
+        rewriting_rules = []
+
+        for operation in self.operations:
+            # Parse the semantics of the operation.
+            node = ast.parse(_unindent(inspect.getsource(operation.fn._original)))
+            parser = _OperationParser(translator=self, operation=operation)
+            parser.visit(node)
+
+    def write_rule(self, operation, guard_parts, match_parts, return_value):
+        # print(guard_parts, match_parts, return_value)
+        guard = ' and '.join(op + '(' + left + right + ')' for left, op, right in guard_parts)
+
+        match = self.operations[operation] + '('
+        for parameter in inspect.signature(operation.fn).parameters:
+            if parameter in match_parts:
+                match += self.write_term(match_parts[parameter]) + ', '
+            else:
+                match += parameter + ', '
+        match = match.rstrip(', ') + ')'
+
+        rule = (guard + ' => ' if guard else '') + match + ' = ' + self.write_term(return_value)
+        print(rule)
+
+        # print(self.write_term(return_value))
+
+    def write_term(self, term):
+        if term.positional_arguments:
+            subterms = ', '.join(self.write_term(subterm) for subterm in term.positional_arguments)
+            return term.name + '(' + subterms + ')'
+
+        if term.named_arguments:
+            subterms = ', '.join(
+                name + ' = ' + self.write_term(subterm)
+                for name, subterm in term.named_arguments.items())
+            return term.name + '(' + subterms + ')'
+
+        return term.name
+
+
+class _OperationParser(ast.NodeVisitor):
+
+    comparison_operators = {
+        ast.Eq: '__eq__',
+        ast.NotEq: '__ne__',
+        ast.Lt: '__lt__',
+        ast.LtE: '__le__',
+        ast.GtE: '__ge__',
+        ast.Gt: '__gt__',
+        ast.In: '__contains__'
+    }
+
+    def __init__(self, translator, operation, stack=None):
+        self.translator = translator
+        self.operation = operation
+        self.stack = stack or []
+
+    @property
+    def fn_scope(self):
+        rv = dict(self.operation.fn._original.__globals__)
+        rv.update(self.operation.fn._nonlocals)
+        return rv
+
+    def visit_If(self, node):
+        # Put the current test on the stack and visit the body.
+        subparser = _OperationParser(
+            translator=self.translator,
+            operation=self.operation,
+            stack=self.stack + [node.test])
+
+        for child in node.body:
+            subparser.visit(child)
+
+    def visit_Return(self, node):
+        # Parse the rule conditions and return value.
+        (guard_parts, match_parts) = self.parse_conditions()
+        return_value = self.parse_expr(node.value)
+
+        # Call the translator to rewrite the parsed rule.
+        self.translator.write_rule(self.operation, guard_parts, match_parts, return_value)
+
+    def parse_conditions(self):
+        guard_parts = []
+        match_parts = {}
+
+        for condition in self.stack:
+            (guard_part, match_part) = self.parse_condition(condition)
+            if guard_part is not None:
+                guard_parts.append(guard_part)
+            if match_part is not None:
+                match_parts.update({match_part[0]: match_part[1]})
+
+        return (guard_parts, match_parts)
+
+    def parse_condition(self, node):
+        """
+        Returns a tuple `(guard_part, match_part)`.
+
+        `guard_part` is either `None` if the condition should be translated
+        as the guard part of the rule, or a tuple `(left, op, right)` where
+        `left` and`right` are the operands and `op` is the name of the
+        comparison operator.
+
+        `match_part` is either `None` if the condition should be translated
+        as the matching part of the rule, or a tuple `(left, right)` where
+        `right` is the pattern `left` should match.
+        """
+
+        if type(node) == ast.Compare:
+            # In Python, it is possible to compare more than two values in a
+            # single "comparison" (e.g. 1 < x < 9), but we forbid this syntax
+            # here in favor of (1 < x) and (x < 9) which arguably has a
+            # clearer semantics.
+            if len(node.ops) > 1:
+                raise TranslationError('Comparison of more than two values might be ambiguous.')
+
+            left = self.parse_expr(node.left)
+            right = self.parse_expr(node.comparators[0])
+
+            # If the operator is __eq__ and one of the operand is a parameter
+            # of the operation, we should translate this condition as a part
+            # of the the matching side of the rule.
+            if type(node.ops[0]) == ast.Eq:
+                if left.name in self.operation.domain:
+                    return (None, (left.name, right))
+                elif right.name in self.operation.domain:
+                    return (None, (right.name, left))
+
+            # For any other operator, we can assume that we should translate
+            # the condition as a guard of the rule.
+            return ((left, self.comparison_operators[node.ops[0]], right), None)
+
+    def parse_expr(self, node):
+        if type(node) == ast.Name:
+            # If the node refers to a parameter of the operation, we simply
+            # its name.
+            if node.id in self.operation.domain:
+                return TermTree(node.id)
+
+            # If the node refers to a python object, we retrieve it from the
+            # scope of the operation and parse it.
+            return self.parse_object(self.fn_scope[node.id])
+
+        else:
+            # If the node refers to an arbitrary expression, we evaluate it as
+            # a python object and parse it.
+            src = astunparse.unparse(node)
+
+            var_manager = TermTreeManager()
+            scope = dict(self.fn_scope)
+            scope['var'] = var_manager
+
+            local_vars = {name: getattr(var_manager, name) for name in self.operation.domain}
+            obj = eval(src, scope, local_vars)
+
+            return self.parse_object(obj)
+
+    def parse_object(self, obj):
+        if isinstance(obj, TermTree):
+            return obj
+
+        if isinstance(obj, Sort):
+            term_name = None
+            named_arguments = {}
+
+            # If the object is a generator, we lookup its name in the
+            # registered generators and we parse its arguments.
+            if obj._is_a_constant:
+                term_name = self.translator.generators[obj._generator]
+                if obj._generator_args is not None:
+                    named_arguments.update({
+                        name: self.parse_object(value)
+                        for name, value in obj._generator_args.items()})
+
+            # If the object is a record, we lookup its name in the registered
+            # sorts and we parse its attributes.
+            else:
+                term_name = self.translator.sorts[obj.__class__]
+                named_arguments.update({
+                    name: self.parse_object(getattr(obj, name))
+                    for name in obj.__attributes__})
+
+            return TermTree(term_name, named_arguments=named_arguments)
+
+        # If the given python object isn't an instance of a sort, we can't
+        # parse it as a term.
+        raise TranslationError('Cannot parse %s.' % obj)
+
+
+def _unindent(src):
+    indentation = len(src) - len(src.lstrip())
+    return '\n'.join([line[indentation:] for line in src.split('\n')])
