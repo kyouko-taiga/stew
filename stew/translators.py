@@ -163,7 +163,7 @@ class _OperationParser(ast.NodeVisitor):
 
         # Visit the else block.
         for child in node.orelse:
-            self.generic_visit(child)
+            self.visit(child)
 
     def visit_Return(self, node):
         # Create a variable manager here so that we can keep track of the
