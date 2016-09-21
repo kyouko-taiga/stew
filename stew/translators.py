@@ -117,17 +117,50 @@ class _OperationParser(ast.NodeVisitor):
 
         return rv
 
+    def _dnf(self, node):
+        if type(node) != ast.BoolOp:
+            return node
+
+        values = [self._dnf(child) for child in node.values]
+
+        if type(node.op) == ast.Or:
+            return ast.BoolOp(op=ast.Or(), values=values)
+
+        for index, value in enumerate(values):
+            if (type(value) == ast.BoolOp) and (type(value.op) == ast.Or):
+                maxterm = values[index]
+                values = values[:index] + values[index + 1:]
+                values = [ast.BoolOp(op=ast.And(), values=[v] + values) for v in maxterm.values]
+                return self._dnf(ast.BoolOp(op=ast.Or(), values=values))
+
+        return node
+
     def visit_If(self, node):
-        # Put the current test on the stack and visit the body.
-        subparser = _OperationParser(
-            translator=self.translator,
-            operation=self.operation,
-            stack=self.stack + [node.test])
+        # If the test a boolean operation, we have to visit the then block for
+        # each disjunction of the test.
+        if type(node.test) == ast.BoolOp:
+            test = self._dnf(node.test)
 
-        for child in node.body:
-            subparser.visit(child)
+            if type(test.op) == ast.Or:
+                for value in test.values:
+                    thenparser = self._make_subparser(self.stack + [value])
+                    for child in node.body:
+                        thenparser.visit(child)
 
-        # TODO Visit orelse blocks.
+            if type(test.op) == ast.And:
+                thenparser = self._make_subparser(self.stack + test.values)
+                for child in node.body:
+                    thenparser.visit(child)
+
+        # Otherwise, we can visit the then block directly.
+        else:
+            thenparser = self._make_subparser(self.stack + [node.test])
+            for child in node.body:
+                thenparser.visit(child)
+
+        # Visit the else block.
+        for child in node.orelse:
+            self.generic_visit(child)
 
     def visit_Return(self, node):
         # Create a variable manager here so that we can keep track of the
@@ -264,6 +297,9 @@ class _OperationParser(ast.NodeVisitor):
         # If the given python object isn't an instance of a sort, we can't
         # parse it as a term.
         raise TranslationError('Cannot parse %s.' % obj)
+
+    def _make_subparser(self, stack):
+        return _OperationParser(translator=self.translator, operation=self.operation, stack = stack)
 
 
 class SortMock(object):
