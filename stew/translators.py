@@ -2,9 +2,12 @@ import ast
 import astunparse
 import inspect
 
+from collections import OrderedDict
+from functools import partial
+
 from .core import Sort, generator, operation
 from .exceptions import TranslationError
-from .termtree import TermTree, TermTreeManager
+from .termtree import TermTree, TermTreeManager, make_term_from_call
 
 from .types.bool import Bool
 
@@ -78,15 +81,9 @@ class Translator(object):
         elif isinstance(term_name, generator):
             term_name = self.generators[term_name]
 
-        if term.positional_args:
-            subterms = ', '.join(self.write_term(subterm) for subterm in term.positional_args)
+        if term.args:
+            subterms = ', '.join(self.write_term(subterm) for subterm in term.args.values())
             return term_name+ '(' + subterms + ')'
-
-        if term.named_args:
-            subterms = ', '.join(
-                name + ' = ' + self.write_term(subterm)
-                for name, subterm in term.named_args.items())
-            return term_name + '(' + subterms + ')'
 
         return term_name
 
@@ -251,8 +248,11 @@ class _OperationParser(ast.NodeVisitor):
                     'Cannot implicitly convert %s to a condition. '
                     'Use "==" or "!=" to create explicit conditions.')
 
-            left = TermTree(
-                name=operation, domain=operation.codomain, positional_args=(left, right))
+            parameters = inspect.signature(operation.fn).parameters
+            term_args = OrderedDict([
+                (parameter, value) for parameter, value in zip(parameters, (left, right))])
+
+            left = TermTree(name=operation, domain=operation.codomain, args=term_args)
             right = getattr(SortMock(operation.codomain), 'true')()
             return ((left, '__eq__', right), None)
 
@@ -289,28 +289,28 @@ class _OperationParser(ast.NodeVisitor):
         if isinstance(obj, TermTree):
             return obj
 
-        if isinstance(obj, Sort):
-            term_name = None
-            named_args = {}
-
-            # If the object is a generator, we lookup its name in the
-            # registered generators and we parse its arguments.
-            if obj._is_a_constant:
-                term_name = self.translator.generators[obj._generator]
-                if obj._generator_args is not None:
-                    named_args.update({
-                        name: self.parse_object(value)
-                        for name, value in obj._generator_args.items()})
-
-            # If the object is a record, we lookup its name in the registered
-            # sorts and we parse its attributes.
-            else:
-                term_name = self.translator.sorts[obj.__class__]
-                named_args.update({
-                    name: self.parse_object(getattr(obj, name))
-                    for name in obj.__attributes__})
-
-            return TermTree(term_name, named_args=named_args)
+        # if isinstance(obj, Sort):
+        #     term_name = None
+        #     named_args = {}
+        #
+        #     # If the object is a generator, we lookup its name in the
+        #     # registered generators and we parse its arguments.
+        #     if obj._is_a_constant:
+        #         term_name = self.translator.generators[obj._generator]
+        #         if obj._generator_args is not None:
+        #             named_args.update({
+        #                 name: self.parse_object(value)
+        #                 for name, value in obj._generator_args.items()})
+        #
+        #     # If the object is a record, we lookup its name in the registered
+        #     # sorts and we parse its attributes.
+        #     else:
+        #         term_name = self.translator.sorts[obj.__class__]
+        #         named_args.update({
+        #             name: self.parse_object(getattr(obj, name))
+        #             for name in obj.__attributes__})
+        #
+        #     return TermTree(term_name, named_args=named_args)
 
         # If the given python object isn't an instance of a sort, we can't
         # parse it as a term.
@@ -327,30 +327,10 @@ class SortMock(object):
 
     def __getattr__(self, name):
         attr = getattr(self.target, name)
-        if isinstance(attr, generator):
+        if isinstance(attr, (generator, operation)):
             # Create a function that generates the term corresponding to a
             # call to the accessed generator or operation.
-            def make_term(*args, **kwargs):
-                parameters = inspect.signature(attr.fn).parameters
-                term_args = [None] * len(parameters)
-                term_args[0:len(args)] = list(args)
-
-                for i, parameter in enumerate(parameters):
-                    # Map named arguments to their position.
-                    if parameter in kwargs:
-                        term_args[i] = kwargs[parameter]
-
-                    if term_args[i] is None:
-                        raise TranslationError(
-                            '%s() missing argument: %s' % (attr.fn.__qualname__, parameter))
-
-                    # Infer the type of the arguments from the signature of
-                    # the generator (or operation).
-                    term_args[i].domain = attr.domain[parameter]
-
-                return TermTree(name=attr, domain=attr.codomain, positional_args=args)
-
-            return make_term
+            return partial(make_term_from_call, attr)
 
         # TODO Handle attributes.
 
