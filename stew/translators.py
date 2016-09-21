@@ -16,23 +16,27 @@ class Translator(object):
 
     def register(self, obj, name=None):
         if isinstance(obj, type) and issubclass(obj, Sort):
-            # Check that the sort wasn't already registered.
-            if obj in self.sorts:
-                return
-
             name = name or obj.__qualname__
+            if obj in self.sorts:
+                return name
             self.sorts[obj] = name
 
-            # Register the sort generators and operations.
+            # Register the generators and operations.
             for attr_name, attr_value in obj.__dict__.items():
                 if isinstance(attr_value, (generator, operation)):
                     self.register(attr_value, name + '.' + attr_name)
 
-        elif isinstance(obj, operation):
-            self.operations[obj] = name or obj.__name__
+        elif isinstance(obj, (generator, operation)):
+            collection = self.operations if isinstance(obj, operation) else self.generators
+            name = name or obj.__name__
+            if obj in collection:
+                return name
+            collection[obj] = name
 
-        elif isinstance(obj, generator):
-            self.generators[obj] = name or obj.__name__
+            # Register the sorts of the domain and codomain.
+            for dependency in obj.domain.values():
+                self.register(dependency)
+            self.register(obj.codomain)
 
         else:
             raise TranslationError(
