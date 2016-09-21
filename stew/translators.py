@@ -6,6 +6,8 @@ from .core import Sort, generator, operation
 from .exceptions import TranslationError
 from .termtree import TermTree, TermTreeManager
 
+from .types.bool import Bool
+
 
 class Translator(object):
 
@@ -52,8 +54,11 @@ class Translator(object):
             parser.visit(node)
 
     def write_rule(self, operation, guard_parts, match_parts, return_value):
-        # print(guard_parts, match_parts, return_value)
-        guard = ' and '.join(op + '(' + left + right + ')' for left, op, right in guard_parts)
+        guards = []
+        for left, op, right in guard_parts:
+            op = '==' if op == '__eq__' else '!='
+            guards.append('(%s %s %s)' % (self.write_term(left), op, self.write_term(right)))
+        guard = ' and '.join(guards)
 
         match = self.operations[operation] + '('
         for parameter in inspect.signature(operation.fn).parameters:
@@ -65,8 +70,6 @@ class Translator(object):
 
         rule = (guard + ' => ' if guard else '') + match + ' = ' + self.write_term(return_value)
         print(rule)
-
-        # print(self.write_term(return_value))
 
     def write_term(self, term):
         term_name = term.name
@@ -231,12 +234,27 @@ class _OperationParser(ast.NodeVisitor):
                 elif right.name in self.operation.domain:
                     return (None, (right.name, left))
 
-            # For any other operator, we can assume that we should translate
-            # the condition as a guard of the rule.
-            return ((left, self.comparison_operators[node.ops[0]], right), None)
+            operator_name = self.comparison_operators[type(node.ops[0])]
 
-        # TODO If the condition isn't a comparison, then we should check if
-        # the result of the expression evaluates to the built-in bool sort.
+            # If the operator is either __eq__ or __ne__, between operands
+            # that aren't parameter of the operation, we can assume the
+            # condition should be translated as a guard of the rule.
+            if operator_name in ('__eq__', '__ne__'):
+                return ((left, operator_name, right), None)
+
+            # For any other operator, we have to check if the result of the
+            # expression evaluates as a built-in bool and create an __eq__
+            # guard if it does.
+            operation = getattr(left.domain, operator_name)
+            if not issubclass(operation.codomain, Bool):
+                raise TranslationError(
+                    'Cannot implicitly convert %s to a condition. '
+                    'Use "==" or "!=" to create explicit conditions.')
+
+            left = TermTree(
+                name=operation, domain=operation.codomain, positional_args=(left, right))
+            right = getattr(SortMock(operation.codomain), 'true')()
+            return ((left, '__eq__', right), None)
 
     def parse_expr(self, node, var_manager):
         if type(node) == ast.Name:
