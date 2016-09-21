@@ -83,7 +83,7 @@ class Nat(Sort):
             return Bool.false()
 
         # 0 < suc(y) = true
-        if (self == Nat.zero()) and (other, Nat.suc(var.y)):
+        if (self == Nat.zero()) and (other == Nat.suc(var.y)):
             return Bool.true()
 
         # suc(x) < 0 = false
