@@ -3,11 +3,10 @@ import astunparse
 import inspect
 
 from collections import OrderedDict
-from functools import partial
 
 from .core import Sort, generator, operation
 from .exceptions import TranslationError
-from .termtree import TermTree, TermTreeManager, make_term_from_call
+from .termtree import TermTree, TermTreeManager, SortMock
 
 from .types.bool import Bool
 
@@ -19,6 +18,8 @@ class Translator(object):
         self.generators = {}
         self.operations = {}
 
+        self.accessors = {}
+
     def register(self, obj, name=None):
         if isinstance(obj, type) and issubclass(obj, Sort):
             name = name or obj.__qualname__
@@ -26,10 +27,50 @@ class Translator(object):
                 return name
             self.sorts[obj] = name
 
+            # If the sort has attributes, create and register a generator that
+            # accepts them and register accessors to extract them.
+            if obj.__attributes__:
+                # Generate the code definition of the function.
+                fn_attributes = ', '.join(
+                    '%s: %s' % (name, getattr(obj, name).domain.__name__)
+                    for name in obj.__attributes__)
+                src = 'def __init__(%s) -> %s: pass' % (fn_attributes, obj.__name__)
+
+                # Create the scope of the code to evaluate.
+                sorts = [getattr(obj, name).domain for name in obj.__attributes__] + [obj]
+                scope = {sort.__name__: sort for sort in sorts}
+
+                # Create and register the new generator.
+                eval_locals = {}
+                eval(compile(src, filename='<null>', mode='exec'), scope, eval_locals)
+
+                gen = generator(eval_locals['__init__'])
+                obj.__attr_constructor__ = gen
+                self.register(gen, name + '.__init__')
+
+                # Register the attribute accessors.
+                for attribute_name in obj.__attributes__:
+                    operation_name = '__get_%s__' % attribute_name
+                    self.accessors[name + '.' + operation_name] = {
+                        'parameters': ('term',),
+                        'match_parts': {
+                            'term': TermTree(
+                                prefix=name + '.__init__',
+                                domain=obj,
+                                args=OrderedDict([
+                                    (name, TermTree(prefix=name, domain=getattr(obj, name).domain))
+                                    for name in obj.__attributes__]))
+                        },
+                        'return_value': TermTree(
+                            prefix=attribute_name,
+                            domain=getattr(obj, attribute_name).domain)
+                    }
+
             # Register the generators and operations.
             for attr_name, attr_value in obj.__dict__.items():
                 if isinstance(attr_value, (generator, operation)):
                     self.register(attr_value, name + '.' + attr_name)
+
 
         elif isinstance(obj, (generator, operation)):
             collection = self.operations if isinstance(obj, operation) else self.generators
@@ -48,7 +89,13 @@ class Translator(object):
                 "'%s' should be a sort, a generator, an operation or a strategy." % obj)
 
     def translate(self):
-        rewriting_rules = []
+        for accessor_name, accessor in self.accessors.items():
+            self.write_rule(
+                name=accessor_name,
+                parameters=accessor['parameters'],
+                guard_parts=[],
+                match_parts=accessor['match_parts'],
+                return_value=accessor['return_value'])
 
         for operation in self.operations:
             # Parse the semantics of the operation.
@@ -56,15 +103,15 @@ class Translator(object):
             parser = _OperationParser(translator=self, operation=operation)
             parser.visit(node)
 
-    def write_rule(self, operation, guard_parts, match_parts, return_value):
+    def write_rule(self, name, parameters, guard_parts, match_parts, return_value):
         guards = []
         for left, op, right in guard_parts:
             op = '==' if op == '__eq__' else '!='
             guards.append('(%s %s %s)' % (self.write_term(left), op, self.write_term(right)))
         guard = ' and '.join(guards)
 
-        match = self.operations[operation] + '('
-        for parameter in inspect.signature(operation.fn).parameters:
+        match = name + '('
+        for parameter in parameters:
             if parameter in match_parts:
                 match += self.write_term(match_parts[parameter]) + ', '
             else:
@@ -75,17 +122,17 @@ class Translator(object):
         print(rule)
 
     def write_term(self, term):
-        term_name = term.name
-        if isinstance(term_name, operation):
-            term_name = self.operations[term_name]
-        elif isinstance(term_name, generator):
-            term_name = self.generators[term_name]
+        prefix = term.__prefix__
+        if isinstance(prefix, operation):
+            prefix = self.operations[prefix]
+        elif isinstance(prefix, generator):
+            prefix = self.generators[prefix]
 
-        if term.args:
-            subterms = ', '.join(self.write_term(subterm) for subterm in term.args.values())
-            return term_name+ '(' + subterms + ')'
+        if term.__args__:
+            subterms = ', '.join(self.write_term(subterm) for subterm in term.__args__.values())
+            return prefix + '(' + subterms + ')'
 
-        return term_name
+        return prefix
 
 
 class _OperationParser(ast.NodeVisitor):
@@ -171,8 +218,11 @@ class _OperationParser(ast.NodeVisitor):
         (guard_parts, match_parts) = self.parse_conditions(var_manager)
         return_value = self.parse_expr(node.value, var_manager)
 
+        name = self.translator.operations[self.operation]
+        parameters = inspect.signature(self.operation.fn).parameters
+
         # Call the translator to rewrite the parsed rule.
-        self.translator.write_rule(self.operation, guard_parts, match_parts, return_value)
+        self.translator.write_rule(name, parameters, guard_parts, match_parts, return_value)
 
     def parse_conditions(self, var_manager):
         guard_parts = []
@@ -221,15 +271,15 @@ class _OperationParser(ast.NodeVisitor):
                 # Since pattern matching can only be used with __eq__, if one
                 # of the operands is a variable, we can infer its type from
                 # that of the other one.
-                if left.domain is None:
-                    left.domain = right.domain
-                elif right.domain is None:
-                    right.domain = left.domain
+                if left.__domain__ is None:
+                    left.__domain__ = right.__domain__
+                elif right.__domain__ is None:
+                    right.__domain__ = left.__domain__
 
-                if left.name in self.operation.domain:
-                    return (None, (left.name, right))
-                elif right.name in self.operation.domain:
-                    return (None, (right.name, left))
+                if left.__prefix__ in self.operation.domain:
+                    return (None, (left.__prefix__, right))
+                elif right.__prefix__ in self.operation.domain:
+                    return (None, (right.__prefix__, left))
 
             operator_name = self.comparison_operators[type(node.ops[0])]
 
@@ -242,7 +292,7 @@ class _OperationParser(ast.NodeVisitor):
             # For any other operator, we have to check if the result of the
             # expression evaluates as a built-in bool and create an __eq__
             # guard if it does.
-            operation = getattr(left.domain, operator_name)
+            operation = getattr(left.__domain__, operator_name)
             if not issubclass(operation.codomain, Bool):
                 raise TranslationError(
                     'Cannot implicitly convert %s to a condition. '
@@ -252,7 +302,7 @@ class _OperationParser(ast.NodeVisitor):
             term_args = OrderedDict([
                 (parameter, value) for parameter, value in zip(parameters, (left, right))])
 
-            left = TermTree(name=operation, domain=operation.codomain, args=term_args)
+            left = TermTree(prefix=operation, domain=operation.codomain, args=term_args)
             right = getattr(SortMock(operation.codomain), 'true')()
             return ((left, '__eq__', right), None)
 
@@ -261,7 +311,7 @@ class _OperationParser(ast.NodeVisitor):
             # If the node refers to a parameter of the operation, we simply
             # its name.
             if node.id in self.operation.domain:
-                return TermTree(name=node.id, domain=self.operation.domain[node.id])
+                return TermTree(prefix=node.id, domain=self.operation.domain[node.id])
 
             # If the node refers to a python object, we retrieve it from the
             # scope of the operation and parse it.
@@ -279,7 +329,7 @@ class _OperationParser(ast.NodeVisitor):
             local_vars = {}
             for name in self.operation.domain:
                 local_vars[name] = getattr(var_manager, name)
-                local_vars[name].domain = self.operation.domain[name]
+                local_vars[name].__domain__ = self.operation.domain[name]
 
             obj = eval(src, scope, local_vars)
 
@@ -318,24 +368,6 @@ class _OperationParser(ast.NodeVisitor):
 
     def _make_subparser(self, stack):
         return _OperationParser(translator=self.translator, operation=self.operation, stack = stack)
-
-
-class SortMock(object):
-
-    def __init__(self, target):
-        self.target = target
-
-    def __getattr__(self, name):
-        attr = getattr(self.target, name)
-        if isinstance(attr, (generator, operation)):
-            # Create a function that generates the term corresponding to a
-            # call to the accessed generator or operation.
-            return partial(make_term_from_call, attr)
-
-        # TODO Handle attributes.
-
-        raise TranslationError(
-            'Cannot translate %s because it is not a generator, an operation nor an attribute.')
 
 
 def _unindent(src):

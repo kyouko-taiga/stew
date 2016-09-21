@@ -317,10 +317,11 @@ def _function_class(fn):
     # strongly discouraged. However we can't use it's __self__ because
     # generators aren't considered methods by inspect.ismethod.
 
-    cls = getattr(
-        inspect.getmodule(fn),
-        fn.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0])
+    module = inspect.getmodule(fn)
+    if module is None:
+        return None
 
+    cls = getattr(module, fn.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0])
     if isinstance(cls, type):
         return cls
     return None

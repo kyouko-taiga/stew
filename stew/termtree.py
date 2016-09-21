@@ -1,9 +1,10 @@
 import inspect
 
 from collections import OrderedDict
+from functools import partial
 from itertools import zip_longest
 
-from .core import Attribute, generator
+from .core import Attribute, generator, operation
 from .matching import Var
 from .exceptions import TranslationError
 
@@ -33,13 +34,13 @@ def make_term_from_call(attr, *args, **kwargs):
             missing.append(name)
         else:
             # Infer the type of the arguments from the signature.
-            value.domain = attr.domain[name]
+            value.__domain__ = attr.domain[name]
 
     if len(missing) > 0:
         raise ArgumentError(
             '%s() missing argument(s): %s' % (attr.fn.__qualname__, ', '.join(missing)))
 
-    return TermTree(name=attr, domain=attr.codomain, args=term_args)
+    return TermTree(prefix=attr, domain=attr.codomain, args=term_args)
 
 
 class TermTreeType(type):
@@ -63,10 +64,11 @@ class TermTreeType(type):
     def __new__(cls, classname, bases, attrs):
         def make_method(name):
             def method(self, *args, **kwargs):
-                if self.domain is None:
-                    raise TranslationError('Cannot infer the type of %s.%s.' % (self.name, name))
+                if self.__domain__ is None:
+                    raise TranslationError(
+                        'Cannot infer the type of %s.%s.' % (self.__prefix__, name))
 
-                attr = getattr(self.domain, name)
+                attr = getattr(self.__domain__, name)
                 return make_term_from_call(attr, *((self,) + args), **kwargs)
 
             return method
@@ -80,10 +82,30 @@ class TermTreeType(type):
 
 class TermTree(metaclass=TermTreeType):
 
-    def __init__(self, name, domain=None, args=None):
-        self.name = name
-        self.domain = domain
-        self.args = args or OrderedDict()
+    def __init__(self, prefix, domain=None, args=None):
+        self.__prefix__ = prefix
+        self.__domain__ = domain
+        self.__args__ = args or OrderedDict()
+
+    def __getattr__(self, name):
+        if name == 'where':
+            # Return a function that generates the term corresponding to a
+            # call to the attribute constructor of the current term.
+            term_args = {name: getattr(self, name) for name in self.__domain__.__attributes__}
+            def where(**kwargs):
+                init_args = dict(term_args)
+                init_args.update(kwargs)
+                return SortMock(self.__domain__)(**init_args)
+            return where
+
+        if name not in self.__domain__.__attributes__:
+            raise TranslationError(
+                "'%s' has no attribute '%s'." % (self.__domain__.__name__, name))
+
+        return TermTree(
+            prefix='%s.__get_%s__' % (self.__domain__.__name__, name),
+            domain=getattr(self.__domain__, name).domain,
+            args=OrderedDict([('term', self)]))
 
 
 class TermTreeManager(object):
@@ -91,3 +113,40 @@ class TermTreeManager(object):
     def __getattr__(self, name):
         self.__dict__[name] = TermTree(name)
         return self.__dict__[name]
+
+
+class SortMock(object):
+
+    def __init__(self, target):
+        self.__target__ = target
+
+    def __getattr__(self, name):
+        attr = getattr(self.__target__, name)
+        if isinstance(attr, (generator, operation)):
+            # Return a function that generates the term corresponding to a
+            # call to the accessed generator or operation.
+            return partial(make_term_from_call, attr)
+
+        raise TranslationError(
+            'Cannot translate %s because it is not a generator, an operation nor an attribute.')
+
+    def __call__(self, *args, **kwargs):
+        positionals = [None] * len(self.__target__.__attributes__)
+        positionals[:len(args)] = args
+
+        term_args = OrderedDict()
+        missing = []
+        for name, value in zip(self.__target__.__attributes__, positionals):
+            term_args[name] = value or kwargs.get(name)
+            if term_args[name] is None:
+                missing.append(name)
+
+        if len(missing) > 0:
+            raise TranslationError(
+                '%s.__init__() missing argument(s): %s' %
+                (self.__target__.__name__, ', '.join(missing)))
+
+        return TermTree(
+            prefix=self.__target__.__attr_constructor__,
+            domain=self.__target__,
+            args=term_args)
