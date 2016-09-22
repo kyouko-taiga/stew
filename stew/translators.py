@@ -6,7 +6,7 @@ from collections import OrderedDict
 
 from .core import Sort, generator, operation
 from .exceptions import TranslationError
-from .termtree import TermTree, TermTreeManager, SortMock
+from .termtree import TermTree, TermTreeManager, SortMock, make_term_from_call
 
 from .types.bool import Bool
 
@@ -333,28 +333,25 @@ class _OperationParser(ast.NodeVisitor):
         if isinstance(obj, TermTree):
             return obj
 
-        # if isinstance(obj, Sort):
-        #     term_name = None
-        #     named_args = {}
-        #
-        #     # If the object is a generator, we lookup its name in the
-        #     # registered generators and we parse its arguments.
-        #     if obj._is_a_constant:
-        #         term_name = self.translator.generators[obj._generator]
-        #         if obj._generator_args is not None:
-        #             named_args.update({
-        #                 name: self.parse_object(value)
-        #                 for name, value in obj._generator_args.items()})
-        #
-        #     # If the object is a record, we lookup its name in the registered
-        #     # sorts and we parse its attributes.
-        #     else:
-        #         term_name = self.translator.sorts[obj.__class__]
-        #         named_args.update({
-        #             name: self.parse_object(getattr(obj, name))
-        #             for name in obj.__attributes__})
-        #
-        #     return TermTree(term_name, named_args=named_args)
+        if isinstance(obj, Sort):
+            # If the object is the result of a sort generator, we create a
+            # term from its generator function and arguments.
+            if obj._is_a_constant:
+                if obj._generator_args is not None:
+                    term_args = {
+                        name: self.parse_object(value)
+                        for name, value in obj._generator_args.items()}
+                else:
+                    term_args = {}
+
+                return make_term_from_call(obj._generator, **term_args)
+
+            # If the object is a record, we create a term from its constructor
+            # argument and the value of its attributes.
+            return TermTree(
+                prefix=obj.__attr_constructor__,
+                domain=obj.__class__,
+                args=OrderedDict([(name, getattr(obj, name)) for name in obj.__attributes__]))
 
         # If the given python object isn't an instance of a sort, we can't
         # parse it as a term.
