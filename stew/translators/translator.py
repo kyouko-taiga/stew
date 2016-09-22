@@ -4,11 +4,11 @@ import inspect
 
 from collections import OrderedDict
 
-from .core import Sort, generator, operation
-from .exceptions import TranslationError
-from .termtree import TermTree, TermTreeManager, SortMock, make_term_from_call
+from ..core import Sort, generator, operation
+from ..exceptions import TranslationError
+from ..types.bool import Bool
 
-from .types.bool import Bool
+from .mocks import TermMock, TermMockManager, SortMock, make_term_from_call
 
 
 class Translator(object):
@@ -54,14 +54,14 @@ class Translator(object):
                     self.accessors[name + '.' + operation_name] = {
                         'parameters': ('term',),
                         'match_parts': {
-                            'term': TermTree(
+                            'term': TermMock(
                                 prefix=name + '.__init__',
                                 domain=obj,
                                 args=OrderedDict([
-                                    (name, TermTree(prefix=name, domain=getattr(obj, name).domain))
+                                    (name, TermMock(prefix=name, domain=getattr(obj, name).domain))
                                     for name in obj.__attributes__]))
                         },
-                        'return_value': TermTree(
+                        'return_value': TermMock(
                             prefix=attribute_name,
                             domain=getattr(obj, attribute_name).domain)
                     }
@@ -105,35 +105,7 @@ class Translator(object):
             parser.visit(node)
 
     def write_rule(self, name, parameters, guard_parts, match_parts, return_value):
-        guards = []
-        for left, op, right in guard_parts:
-            op = '==' if op == '__eq__' else '!='
-            guards.append('(%s %s %s)' % (self.write_term(left), op, self.write_term(right)))
-        guard = ' and '.join(guards)
-
-        match = name + '('
-        for parameter in parameters:
-            if parameter in match_parts:
-                match += self.write_term(match_parts[parameter]) + ', '
-            else:
-                match += parameter + ', '
-        match = match.rstrip(', ') + ')'
-
-        rule = (guard + ' => ' if guard else '') + match + ' = ' + self.write_term(return_value)
-        print(rule)
-
-    def write_term(self, term):
-        prefix = term.__prefix__
-        if isinstance(prefix, operation):
-            prefix = self.operations[prefix]
-        elif isinstance(prefix, generator):
-            prefix = self.generators[prefix]
-
-        if term.__args__:
-            subterms = ', '.join(self.write_term(subterm) for subterm in term.__args__.values())
-            return prefix + '(' + subterms + ')'
-
-        return prefix
+        raise NotImplementedError
 
 
 class _OperationParser(ast.NodeVisitor):
@@ -204,7 +176,7 @@ class _OperationParser(ast.NodeVisitor):
     def visit_Return(self, node):
         # Create a variable manager here so that we can keep track of the
         # domain of the variables while parsing the rule.
-        var_manager = TermTreeManager()
+        var_manager = TermMockManager()
 
         # Parse the rule conditions and return value.
         (guard_parts, match_parts) = self.parse_conditions(var_manager)
@@ -294,7 +266,7 @@ class _OperationParser(ast.NodeVisitor):
             term_args = OrderedDict([
                 (parameter, value) for parameter, value in zip(parameters, (left, right))])
 
-            left = TermTree(prefix=operation, domain=operation.codomain, args=term_args)
+            left = TermMock(prefix=operation, domain=operation.codomain, args=term_args)
             right = getattr(SortMock(operation.codomain), 'true')()
             return ((left, '__eq__', right), None)
 
@@ -306,7 +278,7 @@ class _OperationParser(ast.NodeVisitor):
             # If the node refers to a parameter of the operation, we simply
             # return a term representing its name.
             if node.id in self.operation.domain:
-                return TermTree(prefix=node.id, domain=self.operation.domain[node.id])
+                return TermMock(prefix=node.id, domain=self.operation.domain[node.id])
 
             # If the node refers to a python object, we retrieve it from the
             # scope of the operation and parse it.
@@ -331,7 +303,7 @@ class _OperationParser(ast.NodeVisitor):
             return self.parse_object(obj)
 
     def parse_object(self, obj):
-        if isinstance(obj, TermTree):
+        if isinstance(obj, TermMock):
             return obj
 
         if isinstance(obj, Sort):
@@ -349,7 +321,7 @@ class _OperationParser(ast.NodeVisitor):
 
             # If the object is a record, we create a term from its constructor
             # argument and the value of its attributes.
-            return TermTree(
+            return TermMock(
                 prefix=obj.__attr_constructor__,
                 domain=obj.__class__,
                 args=OrderedDict([(name, getattr(obj, name)) for name in obj.__attributes__]))

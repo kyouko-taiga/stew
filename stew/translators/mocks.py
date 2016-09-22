@@ -4,9 +4,9 @@ from collections import OrderedDict
 from functools import partial
 from itertools import zip_longest
 
-from .core import Attribute, generator, operation
-from .matching import Var
-from .exceptions import TranslationError
+from ..core import Attribute, generator, operation
+from ..matching import Var
+from ..exceptions import TranslationError
 
 
 def make_term_from_call(attr, *args, **kwargs):
@@ -40,10 +40,10 @@ def make_term_from_call(attr, *args, **kwargs):
         raise ArgumentError(
             '%s() missing argument(s): %s' % (attr.fn.__qualname__, ', '.join(missing)))
 
-    return TermTree(prefix=attr, domain=attr.codomain, args=term_args)
+    return TermMock(prefix=attr, domain=attr.codomain, args=term_args)
 
 
-class TermTreeType(type):
+class TermMockType(type):
 
     _special_names = [
         '__abs__', '__add__', '__and__', '__call__', '__contains__',
@@ -80,7 +80,7 @@ class TermTreeType(type):
         return type.__new__(cls, classname, (Var,), attrs)
 
 
-class TermTree(metaclass=TermTreeType):
+class TermMock(metaclass=TermMockType):
 
     def __init__(self, prefix, domain=None, args=None):
         self.__prefix__ = prefix
@@ -102,16 +102,16 @@ class TermTree(metaclass=TermTreeType):
             raise TranslationError(
                 "'%s' has no attribute '%s'." % (self.__domain__.__name__, name))
 
-        return TermTree(
+        return TermMock(
             prefix='%s.__get_%s__' % (self.__domain__.__name__, name),
             domain=getattr(self.__domain__, name).domain,
             args=OrderedDict([('term', self)]))
 
 
-class TermTreeManager(object):
+class TermMockManager(object):
 
     def __getattr__(self, name):
-        self.__dict__[name] = TermTree(name)
+        self.__dict__[name] = TermMock(name)
         return self.__dict__[name]
 
 
@@ -147,7 +147,7 @@ class SortMock(object):
                 '%s.__init__() missing argument(s): %s' %
                 (self.__target__.__name__, ', '.join(missing)))
 
-        return TermTree(
+        return TermMock(
             prefix=self.__target__.__attr_constructor__,
             domain=self.__target__,
             args=term_args)
