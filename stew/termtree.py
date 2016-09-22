@@ -128,7 +128,8 @@ class SortMock(object):
             return partial(make_term_from_call, attr)
 
         raise TranslationError(
-            'Cannot translate %s because it is not a generator, an operation nor an attribute.')
+            'Cannot translate %s because it is not a generator, an operation nor an attribute.' %
+            name)
 
     def __call__(self, *args, **kwargs):
         positionals = [None] * len(self.__target__.__attributes__)

@@ -147,10 +147,12 @@ class _OperationParser(ast.NodeVisitor):
         ast.In: '__contains__'
     }
 
-    def __init__(self, translator, operation, stack=None):
+    def __init__(self, translator, operation, stack=None, local_vars=None):
         self.translator = translator
         self.operation = operation
         self.stack = stack or []
+
+        self.locals = local_vars or {}
 
     @property
     def fn_scope(self):
@@ -164,23 +166,12 @@ class _OperationParser(ast.NodeVisitor):
 
         return rv
 
-    def _dnf(self, node):
-        if type(node) != ast.BoolOp:
-            return node
-
-        values = [self._dnf(child) for child in node.values]
-
-        if type(node.op) == ast.Or:
-            return ast.BoolOp(op=ast.Or(), values=values)
-
-        for index, value in enumerate(values):
-            if (type(value) == ast.BoolOp) and (type(value.op) == ast.Or):
-                maxterm = values[index]
-                values = values[:index] + values[index + 1:]
-                values = [ast.BoolOp(op=ast.And(), values=[v] + values) for v in maxterm.values]
-                return self._dnf(ast.BoolOp(op=ast.Or(), values=values))
-
-        return node
+    def visit_Assign(self, node):
+        for target in node.targets:
+            if type(target) == ast.Name:
+                self.locals[target.id] = node.value
+            elif type(target) == ast.Tuple:
+                raise TranslationError('Cannot translate variable unpacking.')
 
     def visit_If(self, node):
         # If the test a boolean operation, we have to visit the then block for
@@ -307,9 +298,12 @@ class _OperationParser(ast.NodeVisitor):
             return ((left, '__eq__', right), None)
 
     def parse_expr(self, node, var_manager):
+        # Dereferences local variables.
+        node = _Dereferencer(self.locals).visit(node)
+
         if type(node) == ast.Name:
             # If the node refers to a parameter of the operation, we simply
-            # its name.
+            # return a term representing its name.
             if node.id in self.operation.domain:
                 return TermTree(prefix=node.id, domain=self.operation.domain[node.id])
 
@@ -366,8 +360,39 @@ class _OperationParser(ast.NodeVisitor):
         # parse it as a term.
         raise TranslationError('Cannot parse %s.' % obj)
 
+    def _dnf(self, node):
+        if type(node) != ast.BoolOp:
+            return node
+
+        values = [self._dnf(child) for child in node.values]
+
+        if type(node.op) == ast.Or:
+            return ast.BoolOp(op=ast.Or(), values=values)
+
+        for index, value in enumerate(values):
+            if (type(value) == ast.BoolOp) and (type(value.op) == ast.Or):
+                maxterm = values[index]
+                values = values[:index] + values[index + 1:]
+                values = [ast.BoolOp(op=ast.And(), values=[v] + values) for v in maxterm.values]
+                return self._dnf(ast.BoolOp(op=ast.Or(), values=values))
+
+        return node
+
     def _make_subparser(self, stack):
-        return _OperationParser(translator=self.translator, operation=self.operation, stack = stack)
+        return _OperationParser(
+            translator=self.translator,
+            operation=self.operation,
+            stack=stack,
+            local_vars=self.locals)
+
+
+class _Dereferencer(ast.NodeTransformer):
+
+    def __init__(self, references):
+        self.references = references
+
+    def visit_Name(self, node):
+        return self.references.get(node.id, node)
 
 
 def _unindent(src):
