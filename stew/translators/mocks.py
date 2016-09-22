@@ -92,10 +92,12 @@ class TermMock(metaclass=TermMockType):
             # Return a function that generates the term corresponding to a
             # call to the attribute constructor of the current term.
             term_args = {name: getattr(self, name) for name in self.__domain__.__attributes__}
+
             def where(**kwargs):
                 init_args = dict(term_args)
                 init_args.update(kwargs)
                 return SortMock(self.__domain__)(**init_args)
+
             return where
 
         if name not in self.__domain__.__attributes__:

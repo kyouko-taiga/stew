@@ -71,7 +71,6 @@ class Translator(object):
                 if isinstance(attr_value, (generator, operation)):
                     self.register(attr_value, name + '.' + attr_name)
 
-
         elif isinstance(obj, (generator, operation)):
             collection = self.operations if isinstance(obj, operation) else self.generators
             name = name or obj.__name__
