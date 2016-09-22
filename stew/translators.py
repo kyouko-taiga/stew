@@ -100,6 +100,7 @@ class Translator(object):
         for operation in self.operations:
             # Parse the semantics of the operation.
             node = ast.parse(_unindent(inspect.getsource(operation.fn._original)))
+            node = _TransformIfExpReturn().visit(node)
             parser = _OperationParser(translator=self, operation=operation)
             parser.visit(node)
 
@@ -390,6 +391,17 @@ class _Dereferencer(ast.NodeTransformer):
 
     def visit_Name(self, node):
         return self.references.get(node.id, node)
+
+
+class _TransformIfExpReturn(ast.NodeTransformer):
+
+    def visit_Return(self, node):
+        if type(node.value) == ast.IfExp:
+            return self.visit(ast.If(
+                test=node.value.test,
+                body=[ast.Return(value=node.value.body)],
+                orelse=[ast.Return(value=node.value.orelse)]))
+        return node
 
 
 def _unindent(src):
