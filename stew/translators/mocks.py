@@ -4,7 +4,7 @@ from collections import OrderedDict
 from functools import partial
 from itertools import zip_longest
 
-from ..core import Attribute, generator, operation
+from ..core import Sort, Attribute, generator, operation
 from ..matching import Var
 from ..exceptions import TranslationError
 
@@ -132,7 +132,7 @@ class SortMock(object):
         return attr
 
     def __call__(self, *args, **kwargs):
-        if hasattr(self.__target__, '__init__'):
+        if self.__target__.__init__ != Sort.__init__:
             return self.__target__(*args, **kwargs)
 
         positionals = [None] * len(self.__target__.__attributes__)
