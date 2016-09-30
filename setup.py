@@ -21,7 +21,8 @@ setup(
     include_package_data=True,
     platforms='any',
     install_requires=[
-        'astunparse>=1.4.0'
+        'astunparse>=1.4.0',
+        'jinja2>=2.8'
     ],
     test_suite='tests',
     classifiers=[
