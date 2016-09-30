@@ -20,7 +20,7 @@ class generator(object):
         try:
             self._codomain = annotations.pop('return')
         except KeyError:
-            raise SyntaxError('Undefined codomain for %s().' % fn.__qualname__)
+            raise SyntaxError('undefined codomain for %s()' % fn.__qualname__)
         self._domain = annotations
         self.fn = fn
 
@@ -58,12 +58,12 @@ class generator(object):
         # were passed to the function.
         if len(self.domain) == 0:
             if (len(args) > 0) or (len(kwargs) > 0):
-                raise ArgumentError('%s() takes no arguments.' % self.fn.__qualname__)
+                raise ArgumentError('%s() takes no arguments' % self.fn.__qualname__)
             return rv
 
         # Allow to call generators with a single positional argument.
         if len(args) > 1:
-            raise ArgumentError('Use of multiple positional arguments is forbidden.')
+            raise ArgumentError('use of multiple positional arguments is forbidden')
         if (len(self.domain) == 1) and (len(args) == 1):
             kwargs.update([(list(self.domain.keys())[0], args[0])])
 
@@ -79,7 +79,7 @@ class generator(object):
 
             if not (isinstance(value, Var) or isinstance(value, sort)):
                 raise ArgumentError(
-                    "'%s' should be a variable or a term of sort '%s'." %
+                    "'%s' should be a variable or a term of sort '%s'" %
                     (name, sort.__sortname__))
 
             rv._generator_args[name] = kwargs[name]
@@ -108,7 +108,7 @@ class operation(generator):
             node = _RewriteOperation().visit(node)
 
             src = astunparse.unparse(node)
-            exec(compile(src, filename=inspect.getsourcefile(fn), mode='exec'))
+            exec(compile(src, filename='', mode='exec'))
 
             self.fn = locals()['_fn']
             update_wrapper(self.fn, fn)
@@ -145,10 +145,10 @@ class operation(generator):
                     'fn': self.fn.__qualname__,
                     'error': e.__class__.__name__,
                     'message': str(e)
-                })
+                }) from e
 
         if rv is None:
-            raise RewritingError('Failed to apply %s().' % self.fn.__qualname__)
+            raise RewritingError('failed to apply %s()' % self.fn.__qualname__)
         return rv
 
     def _prepare_fn(self):
