@@ -17,8 +17,7 @@ class Translator(object):
         self.sorts = {}
         self.generators = {}
         self.operations = {}
-
-        self.accessors = {}
+        self.axioms = {}
 
     def register(self, obj, name=None):
         if isinstance(obj, type) and issubclass(obj, Sort):
@@ -50,10 +49,11 @@ class Translator(object):
 
                 # Register the attribute accessors.
                 for attribute_name in obj.__attributes__:
-                    operation_name = '__get_%s__' % attribute_name
-                    self.accessors[name + '.' + operation_name] = {
-                        'parameters': ('term',),
-                        'match_parts': {
+                    self.register_axiom(
+                        name='%s.__get_%s__' % (name, attribute_name),
+                        parameters=OrderedDict([('term', obj)]),
+                        guards=[],
+                        matchs={
                             'term': TermMock(
                                 prefix=name + '.__init__',
                                 domain=obj,
@@ -61,10 +61,9 @@ class Translator(object):
                                     (name, TermMock(prefix=name, domain=getattr(obj, name).domain))
                                     for name in obj.__attributes__]))
                         },
-                        'return_value': TermMock(
+                        return_value=TermMock(
                             prefix=attribute_name,
-                            domain=getattr(obj, attribute_name).domain)
-                    }
+                            domain=getattr(obj, attribute_name).domain))
 
             # Register the generators and operations.
             for attr_name, attr_value in obj.__dict__.items():
@@ -87,14 +86,11 @@ class Translator(object):
             raise TranslationError(
                 "'%s' should be a sort, a generator, an operation or a strategy." % obj)
 
+    def pre_translate(self):
+        pass
+
     def translate(self):
-        for accessor_name, accessor in self.accessors.items():
-            self.write_rule(
-                name=accessor_name,
-                parameters=accessor['parameters'],
-                guard_parts=[],
-                match_parts=accessor['match_parts'],
-                return_value=accessor['return_value'])
+        self.pre_translate()
 
         for operation in self.operations:
             # Parse the semantics of the operation.
@@ -103,8 +99,21 @@ class Translator(object):
             parser = _OperationParser(translator=self, operation=operation)
             parser.visit(node)
 
-    def write_rule(self, name, parameters, guard_parts, match_parts, return_value):
-        raise NotImplementedError
+        self.post_translate()
+
+    def post_translate(self):
+        pass
+
+    def register_axiom(self, name, parameters, guards, matchs, return_value):
+        if name not in self.axioms:
+            self.axioms[name] = []
+
+        self.axioms[name].append({
+            'parameters': parameters,
+            'guards': guards,
+            'matchs': matchs,
+            'return_value': return_value
+        })
 
 
 class _OperationParser(ast.NodeVisitor):
@@ -174,31 +183,32 @@ class _OperationParser(ast.NodeVisitor):
 
     def visit_Return(self, node):
         # Create a variable manager here so that we can keep track of the
-        # domain of the variables while parsing the rule.
+        # domain of the variables while parsing the axiom semantics.
         var_manager = TermMockManager()
 
-        # Parse the rule conditions and return value.
-        (guard_parts, match_parts) = self.parse_conditions(var_manager)
+        name = self.translator.operations[self.operation]
+        signature = inspect.signature(self.operation.fn).parameters
+        parameters = OrderedDict([(name, self.operation.domain[name]) for name in signature])
+
+        # Parse the axiom conditions and return value.
+        (guards, matchs) = self.parse_conditions(var_manager)
         return_value = self.parse_expr(node.value, var_manager)
 
-        name = self.translator.operations[self.operation]
-        parameters = inspect.signature(self.operation.fn).parameters
-
-        # Call the translator to rewrite the parsed rule.
-        self.translator.write_rule(name, parameters, guard_parts, match_parts, return_value)
+        # Call the translator to rewrite the parsed axiom.
+        self.translator.register_axiom(name, parameters, guards, matchs, return_value)
 
     def parse_conditions(self, var_manager):
-        guard_parts = []
-        match_parts = {}
+        guards = []
+        matchs = {}
 
         for condition in self.stack:
             (guard_part, match_part) = self.parse_condition(condition, var_manager)
             if guard_part is not None:
-                guard_parts.append(guard_part)
+                guards.append(guard_part)
             if match_part is not None:
-                match_parts.update({match_part[0]: match_part[1]})
+                matchs.update({match_part[0]: match_part[1]})
 
-        return (guard_parts, match_parts)
+        return (guards, matchs)
 
     def parse_condition(self, node, var_manager):
         """

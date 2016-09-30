@@ -5,25 +5,39 @@ from .translator import Translator
 
 class SimpleTranslator(Translator):
 
-    def write_rule(self, name, parameters, guard_parts, match_parts, return_value):
+    def dumps(self):
+        rv = ''
+
+        for axiom_name in self.axioms:
+            for axiom in self.axioms[axiom_name]:
+                rv += '%s\n' % self.dump_axiom(
+                    name=axiom_name,
+                    parameters=axiom['parameters'],
+                    guards=axiom['guards'],
+                    matchs=axiom['matchs'],
+                    return_value=axiom['return_value'])
+            rv += '\n'
+
+        return rv
+
+    def dump_axiom(self, name, parameters, guards, matchs, return_value):
         guards = []
-        for left, op, right in guard_parts:
+        for left, op, right in guards:
             op = '==' if op == '__eq__' else '!='
-            guards.append('(%s %s %s)' % (self.write_term(left), op, self.write_term(right)))
+            guards.append('(%s %s %s)' % (self.dump_term(left), op, self.dump_term(right)))
         guard = ' and '.join(guards)
 
         match = name + '('
         for parameter in parameters:
-            if parameter in match_parts:
-                match += self.write_term(match_parts[parameter]) + ', '
+            if parameter in matchs:
+                match += self.dump_term(matchs[parameter]) + ', '
             else:
                 match += parameter + ', '
         match = match.rstrip(', ') + ')'
 
-        rule = (guard + ' => ' if guard else '') + match + ' = ' + self.write_term(return_value)
-        print(rule)
+        return (guard + ' => ' if guard else '') + match + ' = ' + self.dump_term(return_value)
 
-    def write_term(self, term):
+    def dump_term(self, term):
         prefix = term.__prefix__
         if isinstance(prefix, operation):
             prefix = self.operations[prefix]
@@ -31,7 +45,7 @@ class SimpleTranslator(Translator):
             prefix = self.generators[prefix]
 
         if term.__args__:
-            subterms = ', '.join(self.write_term(subterm) for subterm in term.__args__.values())
+            subterms = ', '.join(self.dump_term(subterm) for subterm in term.__args__.values())
             return prefix + '(' + subterms + ')'
 
         return prefix
