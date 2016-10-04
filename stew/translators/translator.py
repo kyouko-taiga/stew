@@ -6,6 +6,7 @@ from collections import OrderedDict
 
 from ..core import Sort, Attribute, generator, operation
 from ..exceptions import TranslationError
+from ..matching import var
 from ..types.bool import Bool
 
 from .mocks import TermMock, TermMockManager, SortMock, make_term_from_call
@@ -29,21 +30,14 @@ class Translator(object):
             # If the sort has attributes, register accessors to extract them.
             if obj.__attributes__:
                 for attribute_name in obj.__attributes__:
-                    self.register_axiom(
-                        name='%s.__get_%s__' % (name, attribute_name),
-                        domain=OrderedDict([('term', obj)]),
-                        guards=[],
-                        matchs={
-                            'term': TermMock(
-                                prefix=name + '.__init__',
-                                domain=obj,
-                                args=OrderedDict([
-                                    (name, TermMock(prefix=name, domain=getattr(obj, name).domain))
-                                    for name in obj.__attributes__]))
-                        },
-                        return_value=TermMock(
-                            prefix=attribute_name,
-                            domain=getattr(obj, attribute_name).domain))
+                    @operation
+                    def accessor(term: obj) -> getattr(obj, attribute_name).domain:
+                        args = {name: getattr(var, name) for name in obj.__attributes__}
+                        if term == obj.__attr_constructor__(**args):
+                            return getattr(var, attribute_name)
+
+                    accessor._fn.__name__ = '%s.__get_%s__' % (obj.__name__, attribute_name)
+                    self.operations[accessor] = accessor.__name__
 
             # Register the generators and operations of the sort.
             for attr_name, attr_value in obj.__dict__.items():
