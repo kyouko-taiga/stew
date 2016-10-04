@@ -167,9 +167,32 @@ class _OperationParser(ast.NodeVisitor):
         (guards, matchs) = self.parse_conditions(var_manager)
         return_value = self.parse_expr(node.value, var_manager)
 
+        # If the pattern matching involves a comparison between the root terms
+        # of the parameters, we substitue any occurence of the left variable
+        # with the right one. That way, we make sure we don't leave free
+        # variables in the return value.
+        for left, right in matchs.items():
+            if (left in self.operation.domain) and (right.__prefix__ in self.operation.domain):
+                return_value = self.substitute(return_value, left, right)
+
         # Call the translator to rewrite the parsed axiom.
         name = self.translator.operations[self.operation]
         self.translator.register_axiom(name, self.operation.domain, guards, matchs, return_value)
+
+    def substitute(self, term, name, substitution):
+        if term.__prefix__ == name:
+            return substitution
+
+        if term.__args__:
+            return TermMock(
+                prefix=term.__prefix__,
+                domain=term.__domain__,
+                args=OrderedDict([
+                    (argname, self.substitute(subterm, name, substitution))
+                    for argname, subterm in term.__args__.items()
+                ]))
+
+        return term
 
     def parse_conditions(self, var_manager):
         guards = []

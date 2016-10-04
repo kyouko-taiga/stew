@@ -196,7 +196,8 @@ class SortBase(type):
             def constructor() -> SortBase.recursive_reference: pass
 
             constructor = generator(constructor)
-            constructor.domain = OrderedDict([(name, attrs[name]) for name in sort_attributes])
+            constructor.domain = OrderedDict(
+                [(name, attrs[name].domain) for name in sort_attributes])
             attrs['__attr_constructor__'] = constructor
 
         # Give a default __sortname__ if none was specified.
