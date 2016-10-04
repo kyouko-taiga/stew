@@ -41,9 +41,7 @@ class generator(object):
         return self.__class__(new_fn)
 
     def __call__(self, *args, **kwargs):
-        # Initialize all sorts arguments with `undefined`.
-        sort_kwargs = {name: undefined for name in self.codomain.__attributes__}
-        rv = self.codomain(**sort_kwargs)
+        rv = self.codomain()
         rv._generator = self
 
         # If the domain of the generator is empty, make sure no argument
@@ -86,6 +84,12 @@ class generator(object):
         domain = ', '.join(
             '%s:%s' % (name, sort.__sortname__) for name, sort in self.domain.items())
         return '(%s) -> %s' % (domain, self.codomain.__sortname__)
+
+
+class attr_constructor(generator):
+
+    def __call__(self, *args, **kwargs):
+        return self.codomain(*args, **kwargs)
 
 
 class operation(generator):
@@ -190,15 +194,28 @@ class SortBase(type):
                 sort_attributes.append(name)
         attrs['__attributes__'] = tuple(sort_attributes)
 
-        # If the sort has attriutes, create a default attribute constructor.
+        # If the sort has attributes, create an attribute constructor and an
+        # attribute accessor for each attribute.
         if sort_attributes:
-            # Generate the code definition of the function.
-            def constructor() -> SortBase.recursive_reference: pass
+            parameters = ', '.join(
+                '%s: %s' % (name, attrs[name].domain.__name__) for name in sort_attributes)
+            src = 'def __constructor__(%s) -> %s: pass' % (parameters, classname)
 
-            constructor = generator(constructor)
-            constructor.domain = OrderedDict(
-                [(name, attrs[name].domain) for name in sort_attributes])
-            attrs['__attr_constructor__'] = constructor
+            scope = {attrs[name].domain.__name__: attrs[name].domain for name in sort_attributes}
+            scope[classname] = SortBase.recursive_reference
+            eval_locals = {}
+            eval(compile(src, filename='<null>', mode='exec'), scope, eval_locals)
+            attrs['__attr_constructor__'] = attr_constructor(eval_locals['__constructor__'])
+
+            for attribute_name in sort_attributes:
+                @operation
+                def accessor(term: SortBase.recursive_reference) -> attrs[attribute_name].domain:
+                    args = {name: getattr(var, name) for name in sort_attributes}
+                    if term == getattr(term.__domain__, '__attr_constructor__')(**args):
+                        return getattr(var, attribute_name)
+
+                accessor._fn.__name__ = '__get_%s__' % attribute_name
+                attrs[accessor._fn.__name__] = accessor
 
         # Give a default __sortname__ if none was specified.
         if '__sortname__' not in attrs:
@@ -304,11 +321,11 @@ class Sort(metaclass=SortBase):
     def __str__(self):
         if self._is_a_constant:
             if self._generator_args is None:
-                return self._generator.fn.__qualname__
+                return self._generator._fn.__qualname__
             else:
                 args = ['%s: %s' % (name, term) for name, term in self._generator_args.items()]
                 args = ', '.join(args)
-                return self._generator.fn.__qualname__ + '(' + args + ')'
+                return self._generator._fn.__qualname__ + '(' + args + ')'
         else:
             if len(self.__attributes__) == 0:
                 return self.__class__.__qualname__

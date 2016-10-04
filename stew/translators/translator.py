@@ -27,18 +27,6 @@ class Translator(object):
                 return name
             self.sorts[obj] = name
 
-            # If the sort has attributes, register accessors to extract them.
-            if obj.__attributes__:
-                for attribute_name in obj.__attributes__:
-                    @operation
-                    def accessor(term: obj) -> getattr(obj, attribute_name).domain:
-                        args = {name: getattr(var, name) for name in obj.__attributes__}
-                        if term == obj.__attr_constructor__(**args):
-                            return getattr(var, attribute_name)
-
-                    accessor._fn.__name__ = '%s.__get_%s__' % (obj.__name__, attribute_name)
-                    self.operations[accessor] = accessor.__name__
-
             # Register the generators and operations of the sort.
             for attr_name, attr_value in obj.__dict__.items():
                 if isinstance(attr_value, (generator, operation)):
@@ -328,7 +316,7 @@ class _OperationParser(ast.NodeVisitor):
             # If the object is a record, we create a term from its constructor
             # argument and the value of its attributes.
             return TermMock(
-                prefix=obj.__attr_constructor__,
+                prefix=obj.__class__.__attr_constructor__,
                 domain=obj.__class__,
                 args=OrderedDict([(name, getattr(obj, name)) for name in obj.__attributes__]))
 
