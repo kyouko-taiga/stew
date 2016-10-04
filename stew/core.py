@@ -2,6 +2,7 @@ import ast
 import astunparse
 import inspect
 
+from collections import OrderedDict
 from functools import update_wrapper
 from types import FunctionType, MethodType
 
@@ -15,37 +16,28 @@ undefined = object()
 class generator(object):
 
     def __init__(self, fn):
-        # Get the domain and codomain of the generator.
+        self._fn = fn
+
+        # Get the codomain of the generator from its annotations.
         annotations = dict(fn.__annotations__)
         try:
-            self._codomain = annotations.pop('return')
+            self.codomain = annotations.pop('return')
         except KeyError:
             raise SyntaxError('undefined codomain for %s()' % fn.__qualname__)
-        self._domain = annotations
-        self.fn = fn
+
+        # Get the domain of the generator from its annotations.
+        parameters = inspect.signature(fn).parameters
+        self.domain = OrderedDict([(name, annotations[name]) for name in parameters])
 
     @property
     def __name__(self):
-        return self.fn.__name__
-
-    @property
-    def domain(self):
-        fn_cls = _function_class(self.fn)
-        return {
-            name: fn_cls if sort is SortBase.recursive_reference else sort
-            for name, sort in self._domain.items()
-        }
-
-    @property
-    def codomain(self):
-        fn_cls = _function_class(self.fn)
-        return fn_cls if self._codomain is SortBase.recursive_reference else self._codomain
+        return self._fn.__name__
 
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
 
-        new_fn = self.fn.__get__(instance, owner)
+        new_fn = self._fn.__get__(instance, owner)
         return self.__class__(new_fn)
 
     def __call__(self, *args, **kwargs):
@@ -58,7 +50,7 @@ class generator(object):
         # were passed to the function.
         if len(self.domain) == 0:
             if (len(args) > 0) or (len(kwargs) > 0):
-                raise ArgumentError('%s() takes no arguments' % self.fn.__qualname__)
+                raise ArgumentError('%s() takes no arguments' % self._fn.__qualname__)
             return rv
 
         # Allow to call generators with a single positional argument.
@@ -86,7 +78,7 @@ class generator(object):
 
         if len(missing) > 0:
             raise ArgumentError(
-                '%s() missing argument(s): %s' % (self.fn.__qualname__, ', '.join(missing)))
+                '%s() missing argument(s): %s' % (self._fn.__qualname__, ', '.join(missing)))
 
         return rv
 
@@ -110,11 +102,11 @@ class operation(generator):
             src = astunparse.unparse(node)
             exec(compile(src, filename='', mode='exec'))
 
-            self.fn = locals()['_fn']
-            update_wrapper(self.fn, fn)
-            self.fn.__qualname__ = fn.__qualname__
-            self.fn._original = fn
-            self.fn._nonlocals = inspect.getclosurevars(self.fn._original).nonlocals
+            self._fn = locals()['_fn']
+            update_wrapper(self._fn, fn)
+            self._fn.__qualname__ = fn.__qualname__
+            self._fn._original = fn
+            self._fn._nonlocals = inspect.getclosurevars(self._fn._original).nonlocals
 
     def __get__(self, instance, owner=None):
         if instance is None:
@@ -126,8 +118,8 @@ class operation(generator):
     def __call__(self, *args, **kwargs):
         # TODO Type checking
 
-        if inspect.ismethod(self.fn):
-            fn = self.fn
+        if inspect.ismethod(self._fn):
+            fn = self._fn
         else:
             fn = self._prepare_fn()
 
@@ -136,32 +128,32 @@ class operation(generator):
         except Exception as e:
             # Inspect where the original function was defined so we can raise
             # a more helpful exception.
-            source_file = inspect.getsourcefile(self.fn._original)
-            source_line = inspect.getsourcelines(self.fn._original)[1]
+            source_file = inspect.getsourcefile(self._fn._original)
+            source_line = inspect.getsourcelines(self._fn._original)[1]
             raise RewritingError(
                 '%(file)s, in %(fn)s (line %(line)s)\n%(error)s: %(message)s' % {
                     'file': source_file,
                     'line': source_line,
-                    'fn': self.fn.__qualname__,
+                    'fn': self._fn.__qualname__,
                     'error': e.__class__.__name__,
                     'message': str(e)
                 }) from e
 
         if rv is None:
-            raise RewritingError('failed to apply %s()' % self.fn.__qualname__)
+            raise RewritingError('failed to apply %s()' % self._fn.__qualname__)
         return rv
 
     def _prepare_fn(self):
         # Inject push_context into the function scope.
-        fn_globals = dict(self.fn._original.__globals__)
+        fn_globals = dict(self._fn._original.__globals__)
         fn_globals['push_context'] = push_context
 
         # Inject non-local variables of the original function into the
         # function scope.
-        fn_globals.update(self.fn._nonlocals)
+        fn_globals.update(self._fn._nonlocals)
 
-        f = FunctionType(self.fn.__code__, fn_globals)
-        return update_wrapper(f, self.fn)
+        f = FunctionType(self._fn.__code__, fn_globals)
+        return update_wrapper(f, self._fn)
 
 
 class Attribute(object):
@@ -198,12 +190,30 @@ class SortBase(type):
                 sort_attributes.append(name)
         attrs['__attributes__'] = tuple(sort_attributes)
 
+        # If the sort has attriutes, create a default attribute constructor.
+        if sort_attributes:
+            # Generate the code definition of the function.
+            def constructor() -> SortBase.recursive_reference: pass
+
+            constructor = generator(constructor)
+            constructor.domain = OrderedDict([(name, attrs[name]) for name in sort_attributes])
+            attrs['__attr_constructor__'] = constructor
+
         # Give a default __sortname__ if none was specified.
         if '__sortname__' not in attrs:
             attrs['__sortname__'] = classname
 
         # Create the sort class.
         new_sort = type.__new__(cls, classname, bases, attrs)
+
+        # Register the sort class in its generators and operations.
+        rr = SortBase.recursive_reference
+        for name, attr in attrs.items():
+            if isinstance(attr, generator):
+                attr.domain.update({
+                    name: new_sort for name, sort in attr.domain.items() if sort is rr})
+                if attr.codomain is rr:
+                    attr.codomain = new_sort
 
         return new_sort
 
@@ -308,23 +318,6 @@ class Sort(metaclass=SortBase):
 
     def __repr__(self):
         return repr(str(self))
-
-
-def _function_class(fn):
-
-    # This function allows us to retrieve the class that defined the given
-    # method. It relies on parsing it's __qualname__, which is usually
-    # strongly discouraged. However we can't use it's __self__ because
-    # generators aren't considered methods by inspect.ismethod.
-
-    module = inspect.getmodule(fn)
-    if module is None:
-        return None
-
-    cls = getattr(module, fn.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0])
-    if isinstance(cls, type):
-        return cls
-    return None
 
 
 def _unindent(src):

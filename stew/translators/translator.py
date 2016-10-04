@@ -4,7 +4,7 @@ import inspect
 
 from collections import OrderedDict
 
-from ..core import Sort, generator, operation
+from ..core import Sort, Attribute, generator, operation
 from ..exceptions import TranslationError
 from ..types.bool import Bool
 
@@ -26,32 +26,12 @@ class Translator(object):
                 return name
             self.sorts[obj] = name
 
-            # If the sort has attributes, create and register a generator that
-            # accepts them and register accessors to extract them.
+            # If the sort has attributes, register accessors to extract them.
             if obj.__attributes__:
-                # Generate the code definition of the function.
-                fn_attributes = ', '.join(
-                    '%s: %s' % (name, getattr(obj, name).domain.__name__)
-                    for name in obj.__attributes__)
-                src = 'def __init__(%s) -> %s: pass' % (fn_attributes, obj.__name__)
-
-                # Create the scope of the code to evaluate.
-                sorts = [getattr(obj, name).domain for name in obj.__attributes__] + [obj]
-                scope = {sort.__name__: sort for sort in sorts}
-
-                # Create and register the new generator.
-                eval_locals = {}
-                eval(compile(src, filename='<null>', mode='exec'), scope, eval_locals)
-
-                gen = generator(eval_locals['__init__'])
-                obj.__attr_constructor__ = gen
-                self.register(gen, name + '.__init__')
-
-                # Register the attribute accessors.
                 for attribute_name in obj.__attributes__:
                     self.register_axiom(
                         name='%s.__get_%s__' % (name, attribute_name),
-                        parameters=OrderedDict([('term', obj)]),
+                        domain=OrderedDict([('term', obj)]),
                         guards=[],
                         matchs={
                             'term': TermMock(
@@ -65,7 +45,7 @@ class Translator(object):
                             prefix=attribute_name,
                             domain=getattr(obj, attribute_name).domain))
 
-            # Register the generators and operations.
+            # Register the generators and operations of the sort.
             for attr_name, attr_value in obj.__dict__.items():
                 if isinstance(attr_value, (generator, operation)):
                     self.register(attr_value, name + '.' + attr_name)
@@ -82,6 +62,9 @@ class Translator(object):
                 self.register(dependency)
             self.register(obj.codomain)
 
+        elif isinstance(obj, Attribute):
+            return
+
         else:
             raise TranslationError(
                 "'%s' should be a sort, a generator, an operation or a strategy." % obj)
@@ -94,7 +77,7 @@ class Translator(object):
 
         for operation in self.operations:
             # Parse the semantics of the operation.
-            node = ast.parse(_unindent(inspect.getsource(operation.fn._original)))
+            node = ast.parse(_unindent(inspect.getsource(operation._fn._original)))
             node = _TransformIfExpReturn().visit(node)
             parser = _OperationParser(translator=self, operation=operation)
             parser.visit(node)
@@ -104,12 +87,12 @@ class Translator(object):
     def post_translate(self):
         pass
 
-    def register_axiom(self, name, parameters, guards, matchs, return_value):
+    def register_axiom(self, name, domain, guards, matchs, return_value):
         if name not in self.axioms:
             self.axioms[name] = []
 
         self.axioms[name].append({
-            'parameters': parameters,
+            'domain': domain,
             'guards': guards,
             'matchs': matchs,
             'return_value': return_value
@@ -137,8 +120,8 @@ class _OperationParser(ast.NodeVisitor):
 
     @property
     def fn_scope(self):
-        rv = dict(self.operation.fn._original.__globals__)
-        rv.update(self.operation.fn._nonlocals)
+        rv = dict(self.operation._fn._original.__globals__)
+        rv.update(self.operation._fn._nonlocals)
 
         # Replace the sorts in the function scope with term generators.
         for name in rv:
@@ -186,16 +169,13 @@ class _OperationParser(ast.NodeVisitor):
         # domain of the variables while parsing the axiom semantics.
         var_manager = TermMockManager()
 
-        name = self.translator.operations[self.operation]
-        signature = inspect.signature(self.operation.fn).parameters
-        parameters = OrderedDict([(name, self.operation.domain[name]) for name in signature])
-
         # Parse the axiom conditions and return value.
         (guards, matchs) = self.parse_conditions(var_manager)
         return_value = self.parse_expr(node.value, var_manager)
 
         # Call the translator to rewrite the parsed axiom.
-        self.translator.register_axiom(name, parameters, guards, matchs, return_value)
+        name = self.translator.operations[self.operation]
+        self.translator.register_axiom(name, self.operation.domain, guards, matchs, return_value)
 
     def parse_conditions(self, var_manager):
         guards = []
@@ -271,9 +251,9 @@ class _OperationParser(ast.NodeVisitor):
                     'Cannot implicitly convert %s to a condition. '
                     'Use "==" or "!=" to create explicit conditions.')
 
-            parameters = inspect.signature(operation.fn).parameters
+            domain = operation.domain
             term_args = OrderedDict([
-                (parameter, value) for parameter, value in zip(parameters, (left, right))])
+                (parameter, value) for parameter, value in zip(domain, (left, right))])
 
             left = TermMock(prefix=operation, domain=operation.codomain, args=term_args)
             right = getattr(SortMock(operation.codomain), 'true')()

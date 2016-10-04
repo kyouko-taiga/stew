@@ -12,7 +12,7 @@ class SimpleTranslator(Translator):
             for axiom in self.axioms[axiom_name]:
                 rv += '%s\n' % self.dump_axiom(
                     name=axiom_name,
-                    parameters=axiom['parameters'],
+                    domain=axiom['domain'],
                     guards=axiom['guards'],
                     matchs=axiom['matchs'],
                     return_value=axiom['return_value'])
@@ -20,7 +20,7 @@ class SimpleTranslator(Translator):
 
         return rv
 
-    def dump_axiom(self, name, parameters, guards, matchs, return_value):
+    def dump_axiom(self, name, domain, guards, matchs, return_value):
         guards = []
         for left, op, right in guards:
             op = '==' if op == '__eq__' else '!='
@@ -28,7 +28,7 @@ class SimpleTranslator(Translator):
         guard = ' and '.join(guards)
 
         match = name + '('
-        for parameter in parameters:
+        for parameter in domain:
             if parameter in matchs:
                 match += self.dump_term(matchs[parameter]) + ', '
             else:

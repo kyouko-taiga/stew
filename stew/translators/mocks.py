@@ -1,5 +1,3 @@
-import inspect
-
 from collections import OrderedDict
 from functools import partial
 from itertools import zip_longest
@@ -10,15 +8,13 @@ from ..exceptions import TranslationError
 
 
 def make_term_from_call(attr, *args, **kwargs):
-    parameters = inspect.signature(attr.fn).parameters
-
-    if len(args) > len(parameters):
+    if len(args) > len(attr.domain):
         raise TranslationError(
             '%s() takes %i positional arguments but %i were given.' %
-            (attr.fn.__qualname__, len(parameters), len(args)))
+            (attr.fn.__qualname__, len(attr.domain), len(args)))
 
     term_args = OrderedDict()
-    for arg, parameter in zip_longest(args, parameters):
+    for arg, parameter in zip_longest(args, attr.domain):
         term_args[parameter] = arg
 
     for name, value in kwargs.items():
