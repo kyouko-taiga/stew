@@ -21,21 +21,23 @@ class SimpleTranslator(Translator):
         return rv
 
     def dump_axiom(self, name, domain, guards, matchs, return_value):
-        guards = []
+        guard_exprs = []
         for left, op, right in guards:
             op = '==' if op == '__eq__' else '!='
-            guards.append('(%s %s %s)' % (self.dump_term(left), op, self.dump_term(right)))
-        guard = ' and '.join(guards)
+            guard_exprs.append('(%s %s %s)' % (self.dump_term(left), op, self.dump_term(right)))
+        guard_expr = ' and '.join(guard_exprs)
 
-        match = name + '('
+        match_expr = name + '('
         for parameter in domain:
             if parameter in matchs:
-                match += self.dump_term(matchs[parameter]) + ', '
+                match_expr += self.dump_term(matchs[parameter]) + ', '
             else:
-                match += parameter + ', '
-        match = match.rstrip(', ') + ')'
+                match_expr += parameter + ', '
+        match_expr = match_expr.rstrip(', ') + ')'
 
-        return (guard + ' => ' if guard else '') + match + ' = ' + self.dump_term(return_value)
+        return (
+            (guard_expr + ' => ' if guard_expr else '') +
+            match_expr + ' = ' + self.dump_term(return_value))
 
     def dump_term(self, term):
         prefix = term.__prefix__
