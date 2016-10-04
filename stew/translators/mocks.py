@@ -4,14 +4,14 @@ from itertools import zip_longest
 
 from ..core import Sort, Attribute, generator, operation
 from ..matching import Var
-from ..exceptions import TranslationError
+from ..exceptions import ArgumentError, TranslationError
 
 
 def make_term_from_call(attr, *args, **kwargs):
     if len(args) > len(attr.domain):
         raise TranslationError(
             '%s() takes %i positional arguments but %i were given.' %
-            (attr.fn.__qualname__, len(attr.domain), len(args)))
+            (attr._fn.__qualname__, len(attr.domain), len(args)))
 
     term_args = OrderedDict()
     for arg, parameter in zip_longest(args, attr.domain):
@@ -21,7 +21,7 @@ def make_term_from_call(attr, *args, **kwargs):
         if name not in term_args:
             raise TranslationError(
                 "%s got an unexpected keyword argument '%s'." %
-                (attr.fn.__qualname__, name))
+                (attr._fn.__qualname__, name))
         term_args[name] = value
 
     missing = []
@@ -34,7 +34,7 @@ def make_term_from_call(attr, *args, **kwargs):
 
     if len(missing) > 0:
         raise ArgumentError(
-            '%s() missing argument(s): %s' % (attr.fn.__qualname__, ', '.join(missing)))
+            '%s() missing argument(s): %s' % (attr._fn.__qualname__, ', '.join(missing)))
 
     return TermMock(prefix=attr, domain=attr.codomain, args=term_args)
 
