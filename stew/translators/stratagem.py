@@ -1,12 +1,12 @@
 import inspect
 
-
 from collections import OrderedDict
 from functools import reduce
+from operator import add
 
 from jinja2 import Environment, FileSystemLoader
 
-from ..core import operation, generator
+from ..core import Sort, generator, attr_constructor, operation
 from ..settings import TEMPLATES_DIRECTORY
 from ..types.bool import Bool
 
@@ -18,8 +18,14 @@ true = TermMock(prefix=Bool.true)
 false = TermMock(prefix=Bool.false)
 
 
-def slugify(name):
-    return name.replace('.', '_')
+class Rule(object):
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+    def linearize(self):
+        pass
 
 
 class StratagemTranslator(Translator):
@@ -29,14 +35,131 @@ class StratagemTranslator(Translator):
 
         self.adt = adt or 'stew'
 
+        self.names = {}
         self.variables = {}
         self.next_variable_id = 0
 
+        self.eqs = {}
+        self.nes = {}
+
+        self.rules = {}
+
+    def pre_translate(self):
         self.register(Bool)
+        self.register_cmp_operations()
 
     def post_translate(self):
+        self.make_basic_rules()
+
+        for operation in self.rules:
+            print(self.nameof(operation))
+            for rule in self.rules[operation]:
+                print('\t' + self.dump_term(rule.left) + ' = ' + self.dump_term(rule.right))
+
+        exit()
+
+    def register_cmp_operations(self):
         for sort in self.sorts:
-            self.register_eq_axioms(sort)
+            @operation
+            def eq(left: sort, right: sort) -> Bool:
+                if left == right:
+                    return Bool.true()
+                return Bool.false()
+
+            @operation
+            def ne(left: sort, right: sort) -> Bool:
+                return ~eq(left, right)
+
+            self.eqs[sort] = eq
+            self.nes[sort] = ne
+
+            self.register(eq)
+            self.register(ne)
+
+    def make_basic_rules(self):
+        for operation in self.axioms:
+            self.rules[operation] = []
+
+            # Collect all the guards associated with the axiom group.
+            guards = reduce(add, (axiom['guards'] for axiom in self.axioms[operation]))
+
+            # If the axioms don't use any guard, then we can translate
+            # directly into basic rewriting rules.
+            if not guards:
+                for axiom in self.axioms[operation]:
+                    self.rules[operation].append(Rule(
+                        left=TermMock(
+                            prefix=operation,
+                            domain=operation.codomain,
+                            args=OrderedDict(self.make_pattern(operation, axiom))),
+                        right=axiom['return_value']))
+                continue
+
+            # Because strategem doesn't support guards on rewriting rules, we
+            # have to rewrite axioms that use guards so that they only rely on
+            # pattern matching instead.
+            # In order to do that, we'll create a new "flattened" rule whose
+            # left term is that of the original axiom extended with a "true"
+            # subterm for each guard that the axiom checks, so that they get
+            # evaluated by pattern matching, while the right term of this
+            # so-called "flattened" rule will be that of the original axiom.
+            # Finally, we'll replace the right term of the original axiom with
+            # a call to the "flattened" rule.
+
+            guard_start = 0
+            vterm = lambda n, s: TermMock(prefix='%s' % n, domain=s)
+
+            left_args = [(name, vterm(name, sort)) for name, sort in operation.domain.items()]
+            original = Rule(
+                left=TermMock(
+                    prefix=operation,
+                    domain=operation.codomain,
+                    args=OrderedDict(left_args)),
+                right=TermMock(
+                    prefix=self.nameof(operation) + '_flattened',
+                    domain=operation.codomain,
+                    args=OrderedDict(
+                        [('g%i' % i, false) for i in range(len(guards))] + left_args)))
+
+            for axiom in self.axioms[operation]:
+                flattened = Rule(
+                    left=TermMock(
+                        prefix=self.nameof(operation) + '_flattened',
+                        domain=operation.codomain,
+                        args=OrderedDict(
+                            [('g%i' % i, vterm('__%i__' % i, Bool)) for i in range(len(guards))] +
+                            self.make_pattern(operation, axiom))),
+                    right=axiom['return_value'])
+
+                for i, guard in enumerate(axiom['guards']):
+                    op = (self.eqs if guard[1] == '__eq__' else self.nes)[guard[0].__domain__]
+                    term = TermMock(
+                        prefix=op,
+                        domain=Bool,
+                        args=OrderedDict([('left', guard[0]), ('right', guard[2])]))
+
+                    guard_name = 'g%i' % (i + guard_start)
+                    flattened.left.__args__[guard_name] = true
+                    original.right.__args__[guard_name] = term
+
+                self.rules[operation].append(flattened)
+
+                # Since we concatenated all guards in one big list, we have to
+                # keep track of the position of the first guard used by the
+                # axiom we're considering to corretly set the pattern to match.
+                guard_start += len(axiom['guards'])
+
+            self.rules[operation].append(original)
+
+    def make_pattern(self, operation, axiom):
+        rv = []
+        for name, sort in operation.domain.items():
+            if name in axiom['matchs']:
+                rv.append((name, axiom['matchs'][name]))
+            else:
+                rv.append((name, TermMock(prefix=name, domain=sort)))
+        return rv
+
 
     def register_eq_axioms(self, sort):
         def make_eq_axiom(lhs, rhs, sort):
@@ -113,83 +236,6 @@ class StratagemTranslator(Translator):
         self.axioms['%s.__ne__' % sort.__name__] = [ne_axiom]
 
     def dumps(self):
-        nameof = lambda sort: slugify(sort.__name__)
-
-        rewritten_axioms = []
-        signatures = {}
-
-        # Add the signature of the __eq__/__ne__ operations.
-        boolname = slugify(Bool.__name__)
-        for sort in self.sorts:
-            sortname = slugify(sort.__name__)
-            signatures[slugify('%s.__eq__' % sortname)] = ([sortname, sortname], boolname)
-            signatures[slugify('%s.__ne__' % sortname)] = ([sortname, sortname], boolname)
-
-        for axiom_name in self.axioms:
-            # Collect all the guards associated with the axiom group.
-            guards = reduce(
-                lambda x, y: x + y, (axiom['guards'] for axiom in self.axioms[axiom_name]))
-
-            if not guards:
-                for axiom in self.axioms[axiom_name]:
-                    rewritten_axioms.append({
-                        'name': axiom_name,
-                        'pattern': self.make_pattern(axiom['parameters'], axiom['matchs']),
-                        'return_value': self.dump_term(axiom['return_value'])
-                    })
-                continue
-
-            # Because strategem doesn't support guards on axioms, we have to
-            # rewrite those that use guards so that they only rely on pattern
-            # matching instead.
-            guard_domains = [Bool for guard in guards]
-            guard_params = [self.make_variable(i, sort) for i, sort in enumerate(guard_domains)]
-
-            # Create (the signature of) a new operation whose domain is that
-            # of the orginial one, plus a boolean for each guard that the
-            # axioms of its semantics use.
-            axiom_parameters = self.axioms[axiom_name][0]['parameters'].values()
-            axiom_domain = self.axioms[axiom_name][0]['return_value'].__domain__
-            signatures[slugify(axiom_name) + '_flat'] = (
-                [nameof(d) for d in guard_domains] + [nameof(d) for d in axiom_parameters],
-                nameof(axiom_domain))
-
-            # Since concatenated all guards in one big list, we need to keep
-            # track of the position of the first guard used by the axiom we're
-            # considering to corretly set the pattern to match.
-            guard_start = 0
-
-            for axiom in self.axioms[axiom_name]:
-                orig_left = self.make_pattern(axiom['parameters'], {})
-                orig_right = [self.dump_term(false) for _ in range(len(guards))] + orig_left
-
-                tran_left = list(guard_params)
-                tran_left += self.make_pattern(axiom['parameters'], axiom['matchs'])
-
-                for i, guard in enumerate(axiom['guards']):
-                    term = self.dump_term(TermMock(
-                        prefix='%s.%s' % (guard[0].__domain__.__name__, guard[1]),
-                        domain=Bool,
-                        args=OrderedDict([('left', guard[0]), ('right', guard[2])])
-                    ))
-
-                    guard_index = i + guard_start
-                    orig_right[guard_index] = term
-                    tran_left[guard_index] = term
-
-                rewritten_axioms.append({
-                    'name': axiom_name,
-                    'pattern': orig_left,
-                    'return_value': slugify(axiom_name) + '_flat(' + ', '.join(orig_right) + ')'
-                })
-                rewritten_axioms.append({
-                    'name': axiom_name + '_flat',
-                    'pattern': tran_left,
-                    'return_value': self.dump_term(axiom['return_value'])
-                })
-
-                guard_start += len(axiom['guards'])
-
         for gen, name in self.generators.items():
             signature = inspect.signature(gen.fn).parameters
             signatures[slugify(name)] = (
@@ -246,28 +292,33 @@ class StratagemTranslator(Translator):
         self.variables[name].append(variable)
         return variable['identifier']
 
-    def make_pattern(self, parameters, matchs):
-        rv = []
-        for name, sort in parameters.items():
-            if name in matchs:
-                rv.append(self.dump_term(matchs[name]))
-            else:
-                rv.append(self.make_variable(name, sort))
-        return rv
-
     def dump_term(self, term):
-        prefix = term.__prefix__
-        if isinstance(prefix, operation):
-            prefix = self.operations[prefix]
-        elif isinstance(prefix, generator):
-            prefix = self.generators[prefix]
-
-        prefix = slugify(prefix)
-
+        if isinstance(term, str):
+            print(term)
         if term.__args__:
             subterms = ', '.join(self.dump_term(subterm) for subterm in term.__args__.values())
-            return prefix + '(' + subterms + ')'
+            return self.nameof(term.__prefix__) + '(' + subterms + ')'
 
         if isinstance(term.__prefix__, generator):
-            return prefix
-        return self.make_variable(prefix, term.__domain__)
+            return self.nameof(term.__prefix__)
+        return self.make_variable(term.__prefix__, term.__domain__)
+
+    def nameof(self, prefix):
+        if prefix in self.names:
+            return self.names[prefix]
+
+        if isinstance(prefix, generator):
+            if isinstance(prefix, attr_constructor):
+                self.names[prefix] = prefix.codomain.__name__ + '__constructor__'
+                return self.names[prefix]
+
+            qualname = prefix._fn.__qualname__.split('.')
+            if qualname[0] == 'SortBase':
+                qualname = [prefix._fn.__name__]
+            if '<locals>' in qualname:
+                del qualname[qualname.index('<locals>')]
+
+            self.names[prefix] = '_'.join(qualname)
+            return self.names[prefix]
+
+        return prefix
