@@ -7,7 +7,7 @@ from functools import update_wrapper
 from types import FunctionType, MethodType
 
 from .exceptions import ArgumentError, RewritingError
-from .matching import Var, push_context, matches
+from .matching import Var, push_context, matches, var
 
 
 undefined = object()
@@ -28,10 +28,6 @@ class generator(object):
         # Get the domain of the generator from its annotations.
         parameters = inspect.signature(fn).parameters
         self.domain = OrderedDict([(name, annotations[name]) for name in parameters])
-
-    @property
-    def __name__(self):
-        return self._fn.__name__
 
     def __get__(self, instance, owner=None):
         if instance is None:
@@ -98,19 +94,7 @@ class operation(generator):
         super().__init__(fn)
 
         if not hasattr(fn, '_original'):
-            # Rewrite the operation so that its if statements are wrapped
-            # within a matching context.
-            node = ast.parse(_unindent(inspect.getsource(fn)))
-            node = _RewriteOperation().visit(node)
-
-            src = astunparse.unparse(node)
-            exec(compile(src, filename='', mode='exec'))
-
-            self._fn = locals()['_fn']
-            update_wrapper(self._fn, fn)
-            self._fn.__qualname__ = fn.__qualname__
-            self._fn._original = fn
-            self._fn._nonlocals = inspect.getclosurevars(self._fn._original).nonlocals
+            self._rewrite_fn(fn)
 
     def __get__(self, instance, owner=None):
         if instance is None:
@@ -146,6 +130,21 @@ class operation(generator):
         if rv is None:
             raise RewritingError('failed to apply %s()' % self._fn.__qualname__)
         return rv
+
+    def _rewrite_fn(self, fn):
+        # Rewrite the operation so that its if statements are wrapped within a
+        # matching context.
+        node = ast.parse(_unindent(inspect.getsource(fn)))
+        node = _RewriteOperation().visit(node)
+
+        src = astunparse.unparse(node)
+        exec(compile(src, filename='', mode='exec'))
+
+        self._fn = locals()['_fn']
+        update_wrapper(self._fn, fn)
+        self._fn.__qualname__ = fn.__qualname__
+        self._fn._original = fn
+        self._fn._nonlocals = inspect.getclosurevars(self._fn._original).nonlocals
 
     def _prepare_fn(self):
         # Inject push_context into the function scope.
@@ -210,12 +209,12 @@ class SortBase(type):
             for attribute_name in sort_attributes:
                 @operation
                 def accessor(term: SortBase.recursive_reference) -> attrs[attribute_name].domain:
-                    args = {name: getattr(var, name) for name in sort_attributes}
-                    if term == getattr(term.__domain__, '__attr_constructor__')(**args):
-                        return getattr(var, attribute_name)
+                    # Note that as we can't have access to the sort class yet,
+                    # it is simpler to defer the definition of its accessors
+                    # semantics until after we'll have created it.
+                    pass
 
-                accessor._fn.__name__ = '__get_%s__' % attribute_name
-                attrs[accessor._fn.__name__] = accessor
+                attrs['__get_%s__' % attribute_name] = accessor
 
         # Give a default __sortname__ if none was specified.
         if '__sortname__' not in attrs:
@@ -224,7 +223,19 @@ class SortBase(type):
         # Create the sort class.
         new_sort = type.__new__(cls, classname, bases, attrs)
 
-        # Register the sort class in its generators and operations.
+        # Define the semantics of the sort accessors.
+        for attribute_name in sort_attributes:
+            def accessor(term: new_sort) -> attrs[attribute_name].domain:
+                with push_context():
+                    args = {name: getattr(var, name) for name in sort_attributes}
+                    if term == new_sort.__attr_constructor__(**args):
+                        return getattr(var, attribute_name)
+
+            attr = getattr(new_sort, '__get_%s__' % attribute_name)
+            attr._rewrite_fn(accessor)
+            attr._fn.__name__ = '__get_%s__' % attribute_name
+
+        # Resolve recursive references in the sort generators and operations.
         rr = SortBase.recursive_reference
         for name, attr in attrs.items():
             if isinstance(attr, generator):

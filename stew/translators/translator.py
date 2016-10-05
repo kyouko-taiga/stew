@@ -15,29 +15,27 @@ from .mocks import TermMock, TermMockManager, SortMock, make_term_from_call
 class Translator(object):
 
     def __init__(self):
-        self.sorts = {}
-        self.generators = {}
-        self.operations = {}
+        self.sorts = set()
+        self.generators = set()
+        self.operations = set()
         self.axioms = {}
 
-    def register(self, obj, name=None):
+    def register(self, obj):
         if isinstance(obj, type) and issubclass(obj, Sort):
-            name = name or obj.__qualname__
             if obj in self.sorts:
-                return name
-            self.sorts[obj] = name
+                return
+            self.sorts.add(obj)
 
             # Register the generators and operations of the sort.
-            for attr_name, attr_value in obj.__dict__.items():
-                if isinstance(attr_value, (generator, operation)):
-                    self.register(attr_value, name + '.' + attr_name)
+            for attr in obj.__dict__.values():
+                if isinstance(attr, (generator, operation)):
+                    self.register(attr)
 
         elif isinstance(obj, (generator, operation)):
             collection = self.operations if isinstance(obj, operation) else self.generators
-            name = name or obj.__name__
             if obj in collection:
-                return name
-            collection[obj] = name
+                return
+            collection.add(obj)
 
             # Register the sorts of the domain and codomain.
             for dependency in obj.domain.values():
@@ -69,12 +67,11 @@ class Translator(object):
     def post_translate(self):
         pass
 
-    def register_axiom(self, name, domain, guards, matchs, return_value):
-        if name not in self.axioms:
-            self.axioms[name] = []
+    def register_axiom(self, operation, guards, matchs, return_value):
+        if operation not in self.axioms:
+            self.axioms[operation] = []
 
-        self.axioms[name].append({
-            'domain': domain,
+        self.axioms[operation].append({
             'guards': guards,
             'matchs': matchs,
             'return_value': return_value
@@ -164,8 +161,8 @@ class _OperationParser(ast.NodeVisitor):
                 return_value = self.substitute(return_value, left, right)
 
         # Call the translator to rewrite the parsed axiom.
-        name = self.translator.operations[self.operation]
-        self.translator.register_axiom(name, self.operation.domain, guards, matchs, return_value)
+        self.translator.register_axiom(
+            self.operation, guards, matchs, return_value)
 
     def substitute(self, term, name, substitution):
         if term.__prefix__ == name:

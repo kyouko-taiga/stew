@@ -101,7 +101,7 @@ class TermMock(metaclass=TermMockType):
                 "'%s' has no attribute '%s'." % (self.__domain__.__name__, name))
 
         return TermMock(
-            prefix='%s.__get_%s__' % (self.__domain__.__name__, name),
+            prefix=getattr(self.__domain__, '__get_%s__' % name),
             domain=getattr(self.__domain__, name).domain,
             args=OrderedDict([('term', self)]))
 
@@ -143,8 +143,8 @@ class SortMock(object):
 
         if len(missing) > 0:
             raise TranslationError(
-                '%s.__init__() missing argument(s): %s' %
-                (self.__target__.__name__, ', '.join(missing)))
+                '%s() missing argument(s): %s' %
+                (self.__target__.__attr_constructor__._fn.__qualname__, ', '.join(missing)))
 
         return TermMock(
             prefix=self.__target__.__attr_constructor__,

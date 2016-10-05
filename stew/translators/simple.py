@@ -1,4 +1,4 @@
-from ..core import operation, generator
+from ..core import generator, attr_constructor, operation
 
 from .translator import Translator
 
@@ -8,11 +8,10 @@ class SimpleTranslator(Translator):
     def dumps(self):
         rv = ''
 
-        for axiom_name in self.axioms:
-            for axiom in self.axioms[axiom_name]:
-                rv += '%s\n' % self.dump_axiom(
-                    name=axiom_name,
-                    domain=axiom['domain'],
+        for operation in self.axioms:
+            for axiom in self.axioms[operation]:
+                rv += '%s\n' % dump_axiom(
+                    operation=operation,
                     guards=axiom['guards'],
                     matchs=axiom['matchs'],
                     return_value=axiom['return_value'])
@@ -20,34 +19,48 @@ class SimpleTranslator(Translator):
 
         return rv
 
-    def dump_axiom(self, name, domain, guards, matchs, return_value):
-        guard_exprs = []
-        for left, op, right in guards:
-            op = '==' if op == '__eq__' else '!='
-            guard_exprs.append('(%s %s %s)' % (self.dump_term(left), op, self.dump_term(right)))
-        guard_expr = ' and '.join(guard_exprs)
+def dump_axiom(operation, guards, matchs, return_value):
+    guard_exprs = []
+    for left, op, right in guards:
+        op = '==' if op == '__eq__' else '!='
+        guard_exprs.append('(%s %s %s)' % (dump_term(left), op, dump_term(right)))
+    guard_expr = ' and '.join(guard_exprs)
 
-        match_expr = name + '('
-        for parameter in domain:
-            if parameter in matchs:
-                match_expr += self.dump_term(matchs[parameter]) + ', '
-            else:
-                match_expr += parameter + ', '
-        match_expr = match_expr.rstrip(', ') + ')'
+    match_expr = _nameof(operation) + '('
+    for parameter in operation.domain:
+        if parameter in matchs:
+            match_expr += dump_term(matchs[parameter]) + ', '
+        else:
+            match_expr += parameter + ', '
+    match_expr = match_expr.rstrip(', ') + ')'
 
-        return (
-            (guard_expr + ' => ' if guard_expr else '') +
-            match_expr + ' = ' + self.dump_term(return_value))
+    return (
+        (guard_expr + ' =>\n\t' if guard_expr else '') +
+        match_expr + ' = ' + dump_term(return_value))
 
-    def dump_term(self, term):
-        prefix = term.__prefix__
-        if isinstance(prefix, operation):
-            prefix = self.operations[prefix]
-        elif isinstance(prefix, generator):
-            prefix = self.generators[prefix]
 
-        if term.__args__:
-            subterms = ', '.join(self.dump_term(subterm) for subterm in term.__args__.values())
-            return prefix + '(' + subterms + ')'
+def dump_term(term):
+    if term.__args__:
+        subterms = ', '.join(dump_term(subterm) for subterm in term.__args__.values())
+        return _nameof(term.__prefix__) + '(' + subterms + ')'
 
-        return prefix
+    return _nameof(term.__prefix__)
+
+
+def _nameof(prefix):
+    if isinstance(prefix, generator):
+        if isinstance(prefix, attr_constructor):
+            return prefix.codomain.__name__
+
+        if prefix._fn.__name__.startswith('__get_'):
+            return prefix.domain['term'].__name__ + '.' + prefix._fn.__name__
+
+        qualname = prefix._fn.__qualname__.split('.')
+        if qualname[0] == 'SortBase':
+            return prefix._fn.__name__
+
+        if '<locals>' in qualname:
+            del qualname[qualname.index('<locals>')]
+        return '.'.join(qualname)
+
+    return prefix
