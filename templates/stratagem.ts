@@ -5,7 +5,7 @@ ADT {{ adt }}
 Signature
 
 Sorts
-    {{ sorts.values()|map('slugify')|sort|join(', ') }}
+    {{ sorts|map('nameof')|join(', ') }}
 
 Generators
     {% for name, (domain, codomain) in signatures.items()|sort(attribute=0) %}
@@ -18,9 +18,11 @@ Variables
     {% endfor %}
 
 Strategies
-    __TRS__ = {
-        {% for axiom in axioms|sort(attribute='name') %}
-        {{ axiom.name|slugify }}({{ axiom.pattern|join(', ') }}) -> {{ axiom.return_value }}{% if not loop.last %},{% endif %}
+    {% for operation in rules %}
+    S_{{ operation|nameof }} = {
+        {% for rule in rules[operation] %}
+        {{ rule.left }} -> {{ rule.right }}{% if not loop.last %},{% endif %}
 
         {% endfor %}
     }
+    {% endfor %}

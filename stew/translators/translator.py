@@ -9,7 +9,7 @@ from ..exceptions import TranslationError
 from ..matching import var
 from ..types.bool import Bool
 
-from .mocks import TermMock, TermMockManager, SortMock, make_term_from_call
+from .mocks import TermMock, TermMockManager, SortMock, GeneratorMock, make_term_from_call
 
 
 class Translator(object):
@@ -102,10 +102,12 @@ class _OperationParser(ast.NodeVisitor):
         rv = dict(self.operation._fn._original.__globals__)
         rv.update(self.operation._fn._nonlocals)
 
-        # Replace the sorts in the function scope with term generators.
+        # Mock the sorts, generators and operations with term generators.
         for name in rv:
             if isinstance(rv[name], type) and issubclass(rv[name], Sort) and (rv[name] != Sort):
                 rv[name] = SortMock(rv[name])
+            if isinstance(rv[name], generator):
+                rv[name] = GeneratorMock(rv[name])
 
         return rv
 

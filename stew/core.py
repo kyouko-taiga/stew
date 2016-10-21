@@ -186,12 +186,23 @@ class SortBase(type):
         return {name: SortBase.recursive_reference}
 
     def __new__(cls, classname, bases, attrs):
-        # Register class attributes.
+        # Register class attributes, generators and operations
         sort_attributes = []
+        sort_generators = []
+        sort_operations = []
+
         for name, attr in attrs.items():
             if isinstance(attr, Attribute):
                 sort_attributes.append(name)
+            if isinstance(attr, generator):
+                if isinstance(attr, operation):
+                    sort_operations.append(name)
+                else:
+                    sort_generators.append(name)
+
         attrs['__attributes__'] = tuple(sort_attributes)
+        attrs['__generators__'] = tuple(sort_generators)
+        attrs['__operations__'] = tuple(sort_operations)
 
         # If the sort has attributes, create an attribute constructor and an
         # attribute accessor for each attribute.

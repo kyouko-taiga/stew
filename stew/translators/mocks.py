@@ -79,9 +79,16 @@ class TermMockType(type):
 class TermMock(metaclass=TermMockType):
 
     def __init__(self, prefix, domain=None, args=None):
+        args = args or OrderedDict()
+        if not isinstance(args, OrderedDict):
+            args = OrderedDict(args)
+
+        if (domain is None) and hasattr(prefix, 'codomain'):
+            domain = prefix.codomain
+
         self.__prefix__ = prefix
         self.__domain__ = domain
-        self.__args__ = args or OrderedDict()
+        self.__args__ = args
 
     def __getattr__(self, name):
         if name == 'where':
@@ -150,3 +157,12 @@ class SortMock(object):
             prefix=self.__target__.__attr_constructor__,
             domain=self.__target__,
             args=term_args)
+
+
+class GeneratorMock(object):
+
+    def __init__(self, target):
+        self.__target__ = target
+
+    def __call__(self, *args, **kwargs):
+        return make_term_from_call(self.__target__, *args, **kwargs)
