@@ -9,9 +9,8 @@ from ..settings import TEMPLATES_DIRECTORY
 from ..types.bool import Bool
 from ..utils import make_generator, make_operation
 
-from .terms import Term
+from .terms import Term, is_linear, variables_of
 from .translator import Translator
-from .utils import is_linear, variables_of
 
 
 true = Term(prefix=Bool.true)

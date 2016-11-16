@@ -1,6 +1,8 @@
 from collections import OrderedDict
 from collections.abc import Mapping
 
+from ..core import generator
+
 
 class Term(object):
 
@@ -36,3 +38,29 @@ class Term(object):
         self.__prefix__ = prefix
         self.__domain__ = domain
         self.__args__ = args
+
+
+def is_variable(term):
+    return not (term.__args__ or isinstance(term.__prefix__, generator))
+
+
+def variables_of(term):
+    if is_variable(term):
+        return [term]
+
+    rv = []
+    for subterm in term.__args__.values():
+        rv += variables_of(subterm)
+    return rv
+
+
+def is_linear(term):
+    if not term.__args__:
+        return True
+
+    seen = set()
+    for v in variables_of(term):
+        if v.__prefix__ in seen:
+            return False
+        seen.add(v.__prefix__)
+    return True
