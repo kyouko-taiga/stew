@@ -89,18 +89,18 @@ class StratagemTranslator(Translator):
 
     def make_basic_rules(self):
         for op in self.axioms:
-            self.rules[op] = self.make_basic_rule(op)
+            self.rules[op] = self.make_basic_rule(op, self.axioms[op])
 
-    def make_basic_rule(self, op):
+    def make_basic_rule(self, op, axioms):
         # Collect all the guards associated with the axiom group.
-        guards = reduce(add, (axiom['guards'] for axiom in self.axioms[op]))
+        guards = reduce(add, (axiom['guards'] for axiom in axioms))
 
         rv = []
 
         # If the axioms don't use any guard, then we can translate
         # directly into basic rewriting rules.
         if not guards:
-            for axiom in self.axioms[op]:
+            for axiom in axioms:
                 rv.append(Rule(
                     left=Term(prefix=op, args=self.make_pattern(op, axiom)),
                     right=axiom['return_value']))
@@ -133,7 +133,7 @@ class StratagemTranslator(Translator):
                 prefix=flattened_operation,
                 args=[false for _ in range(len(guards))] + [Term(prefix=p) for p in op.domain]))
 
-        for axiom in self.axioms[op]:
+        for axiom in axioms:
             flattened = Rule(
                 left=Term(
                     prefix=flattened_operation,
@@ -203,9 +203,15 @@ class StratagemTranslator(Translator):
                     # However, the linearization of left and right terms isn't
                     # the same when the generator doesn't represent a constant.
                     elif side == 'left':
-                        linearized.append(self.linearize_left_recursive(nonlinear_rule, prefix, g))
+                        # Check if the generator is recursive
+                        if not any(d == g for d in g.domain.values()):
+                            linearized += self.linearize_left_non_recursive(
+                                nonlinear_rule, prefix, g)
+                        else:
+                            linearized.append(self.linearize_left_recursive(
+                                nonlinear_rule, prefix, g))
                     else:
-                        linearized += self.linearize_right_recursive(
+                        linearized += self.linearize_right(
                             nonlinear_rule, prefix, g, occurences[prefix])
 
             to_linearize = linearized
@@ -217,6 +223,32 @@ class StratagemTranslator(Translator):
         if side == 'left':
             rv = reduce(add, (self.linearize(new_rule, side='right') for new_rule in rv))
         return reduce(add, (self.linearize(new_rule, side='left') for new_rule in rv))
+
+    def linearize_left_non_recursive(self, rule, prefix, g):
+
+        # If the generator isn't recursive, the linearization consists in
+        # renaming the non-linear variables and playing a guard on the rule to
+        # ensure their equivalence.
+
+        axiom = {
+            'guards': [
+                (Term(prefix=p + '0', domain=d), '__eq__', Term(prefix=p + str(i)))
+                for p, d in g.domain.items()
+                for i in range(1, len(rule.left.__args__))
+            ],
+            'matchs': {
+                operation_parameter: Term(
+                    prefix=g,
+                    args=[Term(prefix=p + str(i)) for p in g.domain])
+                for i, operation_parameter in enumerate(rule.left.__args__)
+            },
+            'return_value': self.substitute(
+                prefix,
+                rule.right,
+                Term(prefix=g, args=[Term(prefix=p + '0') for p in g.domain]))
+        }
+
+        return self.make_basic_rule(rule.left.__prefix__, [axiom])
 
     def linearize_left_recursive(self, rule, prefix, g):
 
@@ -248,9 +280,9 @@ class StratagemTranslator(Translator):
             self.substitute(prefix, rule.left, pre(), using_generator=True),
             self.substitute(prefix, rule.left, post(), using_generator=True))
 
-    def linearize_right_recursive(self, rule, prefix, g, n):
+    def linearize_right(self, rule, prefix, g, n):
 
-        # To linearize rules with recursive generators on their right, we have
+        # To linearize rules with non-linear variables on their right, we have
         # to first duplicate non-linear variables as many times as they appear
         # in the term, to then feed them as the arguments of a new operation
         # that will rename them in the original term.
@@ -261,8 +293,7 @@ class StratagemTranslator(Translator):
         # f(s, u0, ..., um) = f'(copy(s), u0, ..., um) with
         # f'((s0, s1), u0, ..., um) = h(s0, s1, u0, ..., um).
 
-        self.make_copy_rules(g.codomain, n)
-        copy = self.copy_operations[g.codomain][n]
+        copy = self.make_copy_operation(g.codomain, n)
 
         non_recursive_args = [a for a in rule.left.__args__.values() if a.__prefix__ != prefix]
         prime = make_operation(
@@ -306,6 +337,11 @@ class StratagemTranslator(Translator):
 
         rv = [Rule(rule.left, to_prime_right), Rule(from_prime_left, from_prime_right)]
         return rv
+
+    def make_copy_operation(self, sort, n):
+        if (sort not in self.copy_operations) or (n not in self.copy_operations[sort]):
+            self.make_copy_rules(sort, n)
+        return self.copy_operations[sort][n]
 
     def make_copy_rules(self, sort, n=2):
         try:
@@ -371,7 +407,7 @@ class StratagemTranslator(Translator):
                     prefix=expand,
                     args=[
                         Term(
-                            prefix=self.copy_operations[g.domain[p]][n],
+                            prefix=self.make_copy_operation(g.domain[p], n),
                             args=[Term(prefix='__%i' % i) for i in range(len(g.domain))])
                         for p in g.domain
                     ])
@@ -431,9 +467,9 @@ class StratagemTranslator(Translator):
             return self.names[prefix]
 
         if isinstance(prefix, type) and issubclass(prefix, Sort):
-            self.names[prefix] = prefix.__name__ #+ hex(id(prefix))[-4:]#[2:]
+            self.names[prefix] = prefix.__name__ + hex(id(prefix))[-4:]#[2:]
         elif isinstance(prefix, generator):
-            self.names[prefix] = prefix._fn.__name__ #+ hex(id(prefix))[-4:]#[2:]
+            self.names[prefix] = prefix._fn.__name__ + hex(id(prefix))[-4:]#[2:]
         else:
             self.names[prefix] = prefix
 

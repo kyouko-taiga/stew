@@ -56,11 +56,7 @@ class Translator(object):
         self.pre_translate()
 
         for operation in self.operations:
-            # Parse the semantics of the operation.
-            node = ast.parse(_unindent(inspect.getsource(operation._fn._original)))
-            node = _TransformIfExpReturn().visit(node)
-            parser = _OperationParser(translator=self, operation=operation)
-            parser.visit(node)
+            self._parse_operation(operation, self.register_axiom)
 
         self.post_translate()
 
@@ -77,6 +73,13 @@ class Translator(object):
             'return_value': return_value
         })
 
+    def _parse_operation(self, operation, register_axiom):
+        # Parse the semantics of the operation.
+        node = ast.parse(_unindent(inspect.getsource(operation._fn._original)))
+        node = _TransformIfExpReturn().visit(node)
+        parser = _OperationParser(register_axiom=register_axiom, operation=operation)
+        parser.visit(node)
+
 
 class _OperationParser(ast.NodeVisitor):
 
@@ -90,8 +93,8 @@ class _OperationParser(ast.NodeVisitor):
         ast.In: '__contains__'
     }
 
-    def __init__(self, translator, operation, stack=None, local_vars=None):
-        self.translator = translator
+    def __init__(self, register_axiom, operation, stack=None, local_vars=None):
+        self.register_axiom = register_axiom
         self.operation = operation
         self.stack = stack or []
 
@@ -163,7 +166,7 @@ class _OperationParser(ast.NodeVisitor):
                 return_value = self.substitute(return_value, left, right)
 
         # Call the translator to rewrite the parsed axiom.
-        self.translator.register_axiom(
+        self.register_axiom(
             self.operation, guards, matchs, return_value)
 
     def substitute(self, term, name, substitution):
@@ -343,7 +346,7 @@ class _OperationParser(ast.NodeVisitor):
 
     def _make_subparser(self, stack):
         return _OperationParser(
-            translator=self.translator,
+            register_axiom=self.register_axiom,
             operation=self.operation,
             stack=stack,
             local_vars=self.locals)
